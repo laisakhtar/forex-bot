@@ -21,7 +21,7 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 
-BOT_TOKEN = "8807036352:AAHYE_L7zjnksYk2ssjoa3mVRIpI2JSdn4w"
+BOT_TOKEN = "8807036352:AAGwVcFaIxvVU7xUIWFDHlHUwKM3vGdLbuw"
 CHAT_ID = "5883050661"
 
 LEVELS_STAKE = {
