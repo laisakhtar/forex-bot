@@ -9,7 +9,7 @@ import urllib.request
 import numpy as np
 import websockets
 
-# --- Flask Keep-Alive Server for Render ---
+# Flask Keep-Alive Server for Render
 app = Flask(__name__)
 
 @app.route('/')
@@ -22,11 +22,9 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 
-# --- Telegram Credentials ---
 BOT_TOKEN = "8807036352:AAHYE_L7zjnksYk2ssjoa3mVRIpI2JSdn4w"
 CHAT_ID = "5883050661"
 
-# Compounding Ladder (Level 1 to 30)
 LEVELS_STAKE = {
     1: 1.61, 2: 2.93, 3: 5.33, 4: 9.71, 5: 17.67,
     6: 32.15, 7: 58.52, 8: 106.51, 9: 193.85, 10: 352.80,
@@ -36,7 +34,6 @@ LEVELS_STAKE = {
     26: 5112968.68, 27: 9305603.00, 28: 16936197.46, 29: 30823879.37, 30: 56099460.46
 }
 
-# Strictly Isolated Pairs Matching Quotex Forex Spot Rates
 FOREX_PAIRS = {
     "frxEURUSD": {"name": "EUR/USD", "digits": 5},
     "frxGBPUSD": {"name": "GBP/USD", "digits": 5},
@@ -182,7 +179,6 @@ class DisciplineCEOEngine:
                     asyncio.create_task(self.trigger_1hr_cooldown())
                 else:
                     old_lvl = self.current_level
-                    old_sub = self.current_trade_in_level
                     self.current_trade_in_level = 1
                     stake = LEVELS_STAKE[self.current_level]
                     msg = (
@@ -198,7 +194,52 @@ class DisciplineCEOEngine:
 
 engine = DisciplineCEOEngine()
 
-# --- Ultra-Fast Matrix Analyzer (Zero Pandas Freeze) ---
+# Telegram Command Poller (/status, /start)
+async def telegram_command_listener():
+    offset = 0
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}&timeout=10"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            loop = asyncio.get_event_loop()
+            
+            def fetch_updates():
+                try:
+                    with urllib.request.urlopen(req, timeout=12) as response:
+                        return json.loads(response.read().decode('utf-8'))
+                except Exception:
+                    return None
+
+            data = await loop.run_in_executor(None, fetch_updates)
+
+            if data and data.get("ok") and data.get("result"):
+                for upd in data["result"]:
+                    offset = upd["update_id"] + 1
+                    msg = upd.get("message", {})
+                    text = msg.get("text", "").strip()
+                    chat_from = str(msg.get("chat", {}).get("id", ""))
+
+                    if chat_from == CHAT_ID:
+                        if text in ["/status", "/start", "status", "ping"]:
+                            max_sub = engine.get_max_trades(engine.current_level)
+                            stake = LEVELS_STAKE[engine.current_level]
+                            ist_now = get_ist_time().strftime("%H:%M:%S IST")
+                            
+                            status_reply = (
+                                "📊 *PERPETUAL ENGINE TELEMETRY*\n\n"
+                                f"🟢 *Status:* 100% Online & Live\n"
+                                f"🕒 *Server IST Time:* `{ist_now}`\n"
+                                f"📈 *Current Ladder:* Level {engine.current_level}/30 (Trade {engine.current_trade_in_level}/{max_sub})\n"
+                                f"💵 *Current Stake:* ${stake}\n"
+                                f"🚨 *Loss Streak:* {engine.consecutive_losses}/2\n"
+                                f"🛡️ *Discipline Lock:* {'Active (Frozen)' if engine.is_locked else 'Inactive (Scanning)'}\n"
+                                f"🔍 *Pairs Monitored:* 11 Institutional Spot Forex Pairs"
+                            )
+                            await engine.send_telegram(status_reply)
+        except Exception:
+            pass
+        await asyncio.sleep(1)
+
 class InstitutionalMatrixAnalyzer:
     @staticmethod
     def evaluate(sym, candles, ticks):
@@ -211,20 +252,16 @@ class InstitutionalMatrixAnalyzer:
         opens = np.array([c['open'] for c in candles])
         volumes = np.array([c['volume'] for c in candles])
 
-        # VWAP
         cum_pv = np.cumsum(closes * volumes)
         cum_vol = np.cumsum(volumes)
         vwap = float(cum_pv[-1] / (cum_vol[-1] + 1e-9))
 
-        # Volume POC
         hist, bin_edges = np.histogram(closes, bins=10, weights=volumes)
         poc_idx = np.argmax(hist)
         poc = float((bin_edges[poc_idx] + bin_edges[poc_idx + 1]) / 2.0)
 
-        # Cumulative Volume Delta (CVD)
         cvd = sum([t.get('delta', 0.0) for t in ticks[-100:]])
 
-        # EMA 20 and 50
         def calc_ema(arr, span):
             alpha = 2 / (span + 1)
             ema = [arr[0]]
@@ -244,7 +281,6 @@ class InstitutionalMatrixAnalyzer:
         lower_wick = min(last_open, last_close) - last_low
         upper_wick = last_high - max(last_open, last_close)
 
-        # ICT Trap Filter
         recent_high = np.max(highs[-20:-1])
         recent_low = np.min(lows[-20:-1])
         trap_up = (last_high > recent_high) and (last_close < recent_high)
@@ -262,7 +298,6 @@ class InstitutionalMatrixAnalyzer:
         if trap_up or trap_down:
             return "NO_TRADE", last_close, meta
 
-        # CALL Strategy
         if (
             last_close > vwap and
             last_close > poc and
@@ -272,7 +307,6 @@ class InstitutionalMatrixAnalyzer:
         ):
             return "CALL (UP) 🟢", last_close, meta
 
-        # PUT Strategy
         if (
             last_close < vwap and
             last_close < poc and
@@ -286,7 +320,6 @@ class InstitutionalMatrixAnalyzer:
 
 async def monitor_trade_expiry(sym, pair_name, action_type, entry_price, entry_str, exit_str):
     try:
-        # 295 second sleep ensures Quotex 5M candle expiry exact catch
         await asyncio.sleep(295)
         exit_price = latest_quotes.get(sym, entry_price)
         
@@ -297,17 +330,21 @@ async def monitor_trade_expiry(sym, pair_name, action_type, entry_price, entry_s
 
         await engine.process_result(result, sym, pair_name, entry_price, exit_price, entry_str, exit_str)
     except Exception as e:
-        print(f">> [Expiry Catch Safety]: {e}")
+        print(f">> [Expiry Safety]: {e}")
+    finally:
         async with engine.lock:
             engine.active_trade = False
 
 async def run_forex_master():
+    asyncio.create_task(telegram_command_listener())
+
     await engine.send_telegram(
         "🏛️ *PERPETUAL QUANT MATRIX ENGINE ONLINE*\n\n"
         "• *Feed Calibration:* Institutional Quotex Spot Sync\n"
         "• *Loop Architecture:* Async Non-Blocking Multi-Threaded\n"
         "• *Orderflow Filters:* POC / CVD / VWAP / ICT Rejection Lock\n"
-        "• *Compounding Matrix:* Level 1-30 Perpetual Execution\n\n"
+        "• *Compounding Matrix:* Level 1-30 Perpetual Execution\n"
+        "• *Interactive Command:* `/status` command activated.\n\n"
         "🟢 *24/7 Live Monitoring Active.*"
     )
 
@@ -315,7 +352,7 @@ async def run_forex_master():
 
     while True:
         try:
-            print(">> [Quant Feed] Connecting to Real-Time Spot Stream...")
+            print(">> [Quant Feed] Connecting to Spot Stream...")
             async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
                 for sym in FOREX_PAIRS:
                     req = {
@@ -374,7 +411,6 @@ async def run_forex_master():
                     prev_price = latest_quotes.get(sym, price)
                     latest_quotes[sym] = price
 
-                    # Dynamic Tick Delta calculation
                     delta = 1.0 if price >= prev_price else -1.0
                     tick_tape[sym].append({'delta': delta})
                     if len(tick_tape[sym]) > 150:
@@ -388,7 +424,6 @@ async def run_forex_master():
                         candles_history[sym][-1]['low'] = min(candles_history[sym][-1]['low'], price)
                         candles_history[sym][-1]['volume'] += 1.0
 
-                    # Exact Quotex Candle Change Boundary (:00 Minute Mark)
                     if last_checked_bucket[sym] != candle_bucket:
                         last_checked_bucket[sym] = candle_bucket
                         candles_history[sym].append({
@@ -432,25 +467,4 @@ async def run_forex_master():
                                     f"💵 *Stake:* ${stake}\n"
                                     f"📍 *Trigger Spot:* `{price_fmt}`\n\n"
                                     f"🔬 *Institutional Telemetry:*\n"
-                                    f"• *Market Controller:* {meta.get('Controller', 'BALANCED')}\n"
-                                    f"• *Volume POC:* `{meta.get('POC', '0.0')}`\n"
-                                    f"• *VWAP Level:* `{meta.get('VWAP', '0.0')}`\n"
-                                    f"• *CVD Flow:* {meta.get('CVD', 'NEUTRAL')}\n\n"
-                                    f"⚠️ *QUOTEX EXECUTION:* Theek `{entry_str}` par 0-second open candle par trade place karein."
-                                )
-                                await engine.send_telegram(alert)
-                                asyncio.create_task(
-                                    monitor_trade_expiry(sym, pair_name, sig, alert_price, entry_str, exit_str)
-                                )
-
-        except Exception as e:
-            print(f">> [Stream Drop Healing]: Auto-reconnecting in 3s: {e}")
-            await asyncio.sleep(3)
-
-if __name__ == "__main__":
-    while True:
-        try:
-            asyncio.run(run_forex_master())
-        except Exception as global_err:
-            print(f">> [Supervisor Auto-Recovery]: {global_err}")
-            time.sleep(2)
+                                    f"• *Market Controller:* {meta.get('Con
