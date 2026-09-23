@@ -467,4 +467,26 @@ async def run_forex_master():
                                     f"💵 *Stake:* ${stake}\n"
                                     f"📍 *Trigger Spot:* `{price_fmt}`\n\n"
                                     f"🔬 *Institutional Telemetry:*\n"
-                                    f"• *Market Controller:* {meta.get('Con
+                                    f"• *Market Controller:* {meta.get('Controller', 'BALANCED')}\n"
+                                    f"• *Volume POC:* `{meta.get('POC', '0.0')}`\n"
+                                    f"• *VWAP Level:* `{meta.get('VWAP', '0.0')}`\n"
+                                    f"• *CVD Flow:* {meta.get('CVD', 'NEUTRAL')}\n\n"
+                                    f"⚠️ *QUOTEX EXECUTION:* Theek `{entry_str}` par 0-second open candle par trade place karein."
+                                )
+                                await engine.send_telegram(alert)
+                                asyncio.create_task(
+                                    monitor_trade_expiry(sym, pair_name, sig, alert_price, entry_str, exit_str)
+                                )
+
+        except Exception as e:
+            print(f">> [Stream Drop Healing]: Auto-reconnecting in 3s: {e}")
+            await asyncio.sleep(3)
+
+if __name__ == "__main__":
+    while True:
+        try:
+            asyncio.run(run_forex_master())
+        except Exception as global_err:
+            print(f">> [Supervisor Auto-Recovery]: {global_err}")
+            time.sleep(2)
+
