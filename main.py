@@ -208,12 +208,6 @@ class InstitutionalMatrixAnalyzer:
 
         cvd = sum([t.get('delta', 0.0) for t in ticks[-60:]])
 
-        alpha = 2 / (21)
-        ema = [closes[0]]
-        for val in closes[1:]:
-            ema.append(ema[-1] * (1 - alpha) + val * alpha)
-        ema20 = ema[-1]
-
         last_open, last_close = opens[-1], closes[-1]
         last_high, last_low = highs[-1], lows[-1]
         body = max(abs(last_close - last_open), 1e-5)
@@ -227,11 +221,11 @@ class InstitutionalMatrixAnalyzer:
             "Controller": "BUYERS" if cvd >= 0 and last_close >= vwap else "SELLERS"
         }
 
-        # Optimized Confluence Rules for 5M Candle Expiry
-        if last_close >= vwap and cvd >= 0 and lower_wick >= body * 0.25:
+        # Confluence rules for 5M Expiry Execution
+        if last_close >= vwap and cvd >= 0 and lower_wick >= body * 0.20:
             return "CALL (UP) 🟢", last_close, meta
 
-        if last_close <= vwap and cvd <= 0 and upper_wick >= body * 0.25:
+        if last_close <= vwap and cvd <= 0 and upper_wick >= body * 0.20:
             return "PUT (DOWN) 🔴", last_close, meta
 
         return "NO_TRADE", last_close, meta
@@ -257,7 +251,14 @@ async def run_forex_master():
         try:
             async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
                 for sym in FOREX_PAIRS:
-                    req = {"ticks_history": sym, "adjust_start_time": 1, "count": 35, "end": "latest", "style": "candles", "granularity": 300}
+                    req = {
+                        "ticks_history": sym,
+                        "adjust_start_time": 1,
+                        "count": 30,
+                        "end": "latest",
+                        "style": "candles",
+                        "granularity": 300
+                    }
                     await ws.send(json.dumps(req))
                     await ws.send(json.dumps({"ticks": sym}))
                     await asyncio.sleep(0.08)
@@ -276,7 +277,16 @@ async def run_forex_master():
                     if "candles" in data:
                         sym = data.get("echo_req", {}).get("ticks_history", "")
                         if sym in FOREX_PAIRS:
-                            candles_history[sym] = [{'open': float(c['open']), 'high': float(c['high']), 'low': float(c['low']), 'close': float(c['close']), 'volume': 100.0} for c in data["candles"]]
+                            candles_history[sym] = [
+                                {
+                                    'open': float(c['open']),
+                                    'high': float(c['high']),
+                                    'low': float(c['low']),
+                                    'close': float(c['close']),
+                                    'volume': 100.0
+                                }
+                                for c in data["candles"]
+                            ]
                         continue
 
                     if "tick" not in data:
@@ -306,12 +316,20 @@ async def run_forex_master():
 
                     if last_checked_bucket[sym] != candle_bucket:
                         last_checked_bucket[sym] = candle_bucket
-                        candles_history[sym].append({'open': price, 'high': price, 'low': price, 'close': price, 'volume': 1.0})
+                        candles_history[sym].append({
+                            'open': price,
+                            'high': price,
+                            'low': price,
+                            'close': price,
+                            'volume': 1.0
+                        })
                         if len(candles_history[sym]) > 45:
                             candles_history[sym].pop(0)
 
                         if not engine.active_trade and len(candles_history[sym]) >= 20:
-                            sig, alert_price, meta = InstitutionalMatrixAnalyzer.evaluate(sym, candles_history[sym][:-1], tick_tape[sym])
+                            sig, alert_price, meta = InstitutionalMatrixAnalyzer.evaluate(
+                                sym, candles_history[sym][:-1], tick_tape[sym]
+                            )
                             if sig != "NO_TRADE":
                                 async with engine.lock:
                                     engine.active_trade = True
@@ -333,9 +351,9 @@ async def run_forex_master():
                                     f"💵 *Stake:* ${stake}\n"
                                     f"📍 *Spot:* `{price_fmt}`\n\n"
                                     f"🔬 *Telemetry:*\n"
-                                    f"• *Controller:* {meta.get('Controller')}\n"
-                                    f"• *POC:* `{meta.get('POC')}` | *VWAP:* `{meta.get('VWAP')}`\n"
-                                    f"• *CVD:* {meta.get('CVD')}\n\n"
+                                    f"• *Controller:* {meta.get('Controller', 'BUYERS')}\n"
+                                    f"• *POC:* `{meta.get('POC', '0.0')}` | *VWAP:* `{meta.get('VWAP', '0.0')}`\n"
+                                    f"• *CVD:* {meta.get('CVD', 'NEUTRAL')}\n\n"
                                     f"⚠️ Quotex 0-second open candle execution."
                                 )
                                 await engine.send_telegram(alert)
@@ -351,4 +369,3 @@ if __name__ == "__main__":
             asyncio.run(run_forex_master())
         except Exception:
             time.sleep(2)
-    
