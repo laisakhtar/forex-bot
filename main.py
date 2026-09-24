@@ -1,26 +1,28 @@
-import threading
 import os
+import threading
+import time
+import json
+import urllib.request
+from datetime import datetime, timezone, timedelta
 from flask import Flask
 import asyncio
-import json
-import time
-from datetime import datetime, timezone, timedelta
-import urllib.request
 import numpy as np
 import websockets
 
+# Flask Web Server (Render Health Check)
 app = Flask(__name__)
 
 @app.route('/')
-def health():
-    return "ONLINE 24/7 ACTIVE"
+def home():
+    return "QUOTEX MULTI-ENGINE TRIPLE FILTER ONLINE", 200
 
-def run_flask():
+def start_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-threading.Thread(target=run_flask, daemon=True).start()
+threading.Thread(target=start_flask, daemon=True).start()
 
+# Credentials
 BOT_TOKEN = "8807036352:AAGwVcFaIxvVU7xUIWFDHlHUwKM3vGdLbuw"
 CHAT_ID = "5883050661"
 
@@ -48,243 +50,260 @@ FOREX_PAIRS = {
 }
 
 candles_history = {pair: [] for pair in FOREX_PAIRS}
-tick_tape = {pair: [] for pair in FOREX_PAIRS}
 latest_quotes = {pair: 0.0 for pair in FOREX_PAIRS}
 last_checked_bucket = {pair: 0 for pair in FOREX_PAIRS}
 
-def get_ist_time(epoch_time=None):
-    tz = timezone(timedelta(hours=5, minutes=30))
-    if epoch_time:
-        return datetime.fromtimestamp(epoch_time, tz=tz)
-    return datetime.now(tz=tz)
+def get_ist():
+    return datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
-def format_price(sym, price):
-    digits = FOREX_PAIRS.get(sym, {}).get("digits", 5)
-    return f"{price:.{digits}f}"
+def format_price(sym, p):
+    d = FOREX_PAIRS.get(sym, {}).get("digits", 5)
+    return f"{p:.{d}f}"
 
-class DisciplineCEOEngine:
-    def __init__(self):
-        self.current_level = 1
-        self.current_trade_in_level = 1
-        self.consecutive_losses = 0
-        self.is_locked = False
-        self.active_trade = False
-        self.lock = asyncio.Lock()
-
-    def get_max_trades(self, level):
-        return 4 if level <= 20 else 6
-
-    def send_telegram_sync(self, message):
+def send_tg(text):
+    try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = json.dumps({"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}).encode('utf-8')
-        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
-        try:
-            with urllib.request.urlopen(req, timeout=10):
-                pass
-        except Exception as e:
-            print(f"TG Error: {e}")
+        data = json.dumps({"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}).encode('utf-8')
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=6):
+            pass
+    except Exception as e:
+        print(f"TG Send Error: {e}")
 
-    async def send_telegram(self, message):
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self.send_telegram_sync, message)
+class EngineState:
+    def __init__(self):
+        self.level = 1
+        self.trade_step = 1
+        self.consecutive_losses = 0
+        self.active_trade = False
 
-    async def trigger_1hr_cooldown(self):
-        async with self.lock:
-            self.is_locked = True
-        await self.send_telegram("🚨 *2 LOSSES HIT: 60-MIN SHIELD ACTIVE*")
-        await asyncio.sleep(3600)
-        async with self.lock:
-            self.is_locked = False
-            self.consecutive_losses = 0
-            self.current_level = 1
-            self.current_trade_in_level = 1
-            self.active_trade = False
-        await self.send_telegram("🟢 *SHIELD OFF: TRADING RESUMED*")
+state = EngineState()
 
-    async def process_result(self, result, sym, pair_name, entry_price, exit_price, entry_t, exit_t):
-        async with self.lock:
-            self.active_trade = False
-            max_trades = self.get_max_trades(self.current_level)
-            entry_fmt = format_price(sym, entry_price)
-            exit_fmt = format_price(sym, exit_price)
-
-            if result == "WIN":
-                self.consecutive_losses = 0
-                if self.current_trade_in_level < max_trades:
-                    old_sub = self.current_trade_in_level
-                    self.current_trade_in_level += 1
-                    stake = LEVELS_STAKE[self.current_level]
-                    msg = (
-                        f"✅ *5M CANDLE: WIN* 🟢\n\n"
-                        f"📊 *Asset:* {pair_name}\n"
-                        f"🕒 *Window:* `{entry_t}` ➔ `{exit_t}`\n"
-                        f"📍 *Entry:* `{entry_fmt}` | *Exit:* `{exit_fmt}`\n"
-                        f"📈 *Ladder:* Level {self.current_level}/30 (Trade {old_sub}/{max_trades} ➔ {self.current_trade_in_level}/{max_trades})\n"
-                        f"💵 *Next Stake:* ${stake}"
-                    )
-                else:
-                    self.current_level = 1 if self.current_level >= 30 else self.current_level + 1
-                    self.current_trade_in_level = 1
-                    stake = LEVELS_STAKE[self.current_level]
-                    msg = f"🚀 *LEVEL PROMOTED:* Level {self.current_level}/30\n💵 *Stake:* ${stake}"
-                await self.send_telegram(msg)
-            else:
-                self.consecutive_losses += 1
-                if self.consecutive_losses >= 2:
-                    asyncio.create_task(self.trigger_1hr_cooldown())
-                else:
-                    self.current_trade_in_level = 1
-                    stake = LEVELS_STAKE[self.current_level]
-                    msg = (
-                        f"⚠️ *5M CANDLE: LOSS* 🔴\n\n"
-                        f"📊 *Asset:* {pair_name}\n"
-                        f"🕒 *Window:* `{entry_t}` ➔ `{exit_t}`\n"
-                        f"📍 *Entry:* `{entry_fmt}` | *Exit:* `{exit_fmt}`\n"
-                        f"🛡️ *Reset to Trade:* 1/{max_trades}\n"
-                        f"💵 *Next Stake:* ${stake}"
-                    )
-                    await self.send_telegram(msg)
-
-engine = DisciplineCEOEngine()
-
-async def telegram_command_listener():
+def telegram_listener():
     offset = 0
     while True:
         try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}&timeout=10"
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}&timeout=5"
             req = urllib.request.Request(url)
-            loop = asyncio.get_event_loop()
-            def fetch():
-                try:
-                    with urllib.request.urlopen(req, timeout=12) as resp:
-                        return json.loads(resp.read().decode('utf-8'))
-                except Exception:
-                    return None
-            data = await loop.run_in_executor(None, fetch)
-            if data and data.get("ok") and data.get("result"):
-                for upd in data["result"]:
-                    offset = upd["update_id"] + 1
-                    msg = upd.get("message", {})
-                    text = msg.get("text", "").strip()
-                    chat_from = str(msg.get("chat", {}).get("id", ""))
-                    if chat_from == CHAT_ID and text in ["/status", "/start", "status", "ping"]:
-                        max_sub = engine.get_max_trades(engine.current_level)
-                        stake = LEVELS_STAKE[engine.current_level]
-                        t_now = get_ist_time().strftime("%H:%M:%S IST")
-                        txt = (
-                            f"📊 *ENGINE TELEMETRY REPORT*\n\n"
-                            f"🟢 *System:* 100% Online & Stable\n"
-                            f"🕒 *IST Time:* `{t_now}`\n"
-                            f"📈 *Ladder:* Level {engine.current_level}/30 (Trade {engine.current_trade_in_level}/{max_sub})\n"
-                            f"💵 *Stake:* ${stake}\n"
-                            f"🚨 *Loss Streak:* {engine.consecutive_losses}/2\n"
-                            f"🛡️ *Shield:* {'LOCKED' if engine.is_locked else 'READY'}\n"
-                            f"🔍 *Pairs Monitored:* 11 Spot Pairs"
-                        )
-                        await engine.send_telegram(txt)
+            with urllib.request.urlopen(req, timeout=8) as r:
+                res = json.loads(r.read().decode('utf-8'))
+                if res.get("ok"):
+                    for u in res.get("result", []):
+                        offset = u["update_id"] + 1
+                        msg = u.get("message", {})
+                        text = msg.get("text", "").strip()
+                        c_id = str(msg.get("chat", {}).get("id", ""))
+                        if c_id == CHAT_ID and text in ["/status", "status", "/start", "/test"]:
+                            max_t = 4 if state.level <= 20 else 6
+                            st = LEVELS_STAKE[state.level]
+                            t_str = get_ist().strftime("%H:%M:%S IST")
+                            reply = (
+                                f"📊 *QUOTEX MULTI-STRATEGY ENGINE*\n\n"
+                                f"🟢 *Status:* 100% Online & Stable\n"
+                                f"🕒 *Time:* `{t_str}`\n"
+                                f"📈 *Ladder:* Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
+                                f"💵 *Next Stake:* ${st}\n"
+                                f"🚨 *Loss Streak:* {state.consecutive_losses}/2\n"
+                                f"🛡️ *Filters:* MACD + ATR + Rejection Guard\n"
+                                f"🔍 *Pairs Monitored:* 11 Forex/Gold Pairs"
+                            )
+                            send_tg(reply)
         except Exception:
-            pass
-        await asyncio.sleep(1)
+            time.sleep(2)
+        time.sleep(1)
 
-class InstitutionalMatrixAnalyzer:
-    @staticmethod
-    def evaluate(sym, candles, ticks):
-        if len(candles) < 20:
-            return "NO_TRADE", 0.0, {}
+threading.Thread(target=telegram_listener, daemon=True).start()
 
-        closes = np.array([c['close'] for c in candles])
-        highs = np.array([c['high'] for c in candles])
-        lows = np.array([c['low'] for c in candles])
-        opens = np.array([c['open'] for c in candles])
-        volumes = np.array([c['volume'] for c in candles])
+def calc_ema(arr, span):
+    alpha = 2 / (span + 1)
+    res = [arr[0]]
+    for val in arr[1:]:
+        res.append(res[-1] * (1 - alpha) + val * alpha)
+    return np.array(res)
 
-        cum_pv = np.cumsum(closes * volumes)
-        cum_vol = np.cumsum(volumes)
-        vwap = float(cum_pv[-1] / (cum_vol[-1] + 1e-9))
+def calculate_rsi(prices, period=14):
+    if len(prices) < period + 1:
+        return 50.0
+    deltas = np.diff(prices)
+    gains = np.where(deltas > 0, deltas, 0.0)
+    losses = np.where(deltas < 0, -deltas, 0.0)
+    avg_gain = np.mean(gains[-period:])
+    avg_loss = np.mean(losses[-period:])
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
 
-        hist, bin_edges = np.histogram(closes, bins=8, weights=volumes)
-        poc_idx = np.argmax(hist)
-        poc = float((bin_edges[poc_idx] + bin_edges[poc_idx + 1]) / 2.0)
+def evaluate_multi_engine(sym, candles):
+    if len(candles) < 30:
+        return "NO_TRADE", 0.0, {}
 
-        cvd = sum([t.get('delta', 0.0) for t in ticks[-60:]])
+    closes = np.array([c['close'] for c in candles])
+    highs = np.array([c['high'] for c in candles])
+    lows = np.array([c['low'] for c in candles])
+    opens = np.array([c['open'] for c in candles])
 
-        last_open, last_close = opens[-1], closes[-1]
-        last_high, last_low = highs[-1], lows[-1]
-        body = max(abs(last_close - last_open), 1e-5)
-        lower_wick = min(last_open, last_close) - last_low
-        upper_wick = last_high - max(last_open, last_close)
+    c1, o1, h1, l1 = closes[-1], opens[-1], highs[-1], lows[-1]
+    c2, o2 = closes[-2], opens[-2]
 
-        meta = {
-            "POC": format_price(sym, poc),
-            "VWAP": format_price(sym, vwap),
-            "CVD": "BULLISH (+)" if cvd >= 0 else "BEARISH (-)",
-            "Controller": "BUYERS" if cvd >= 0 and last_close >= vwap else "SELLERS"
-        }
+    body = max(abs(c1 - o1), 1e-5)
+    lower_wick = min(o1, c1) - l1
+    upper_wick = h1 - max(o1, c1)
 
-        # Confluence rules for 5M Expiry Execution
-        if last_close >= vwap and cvd >= 0 and lower_wick >= body * 0.20:
-            return "CALL (UP) 🟢", last_close, meta
+    # Fake Signal Filter: Indecision Doji Protection
+    if body < (h1 - l1) * 0.15:
+        return "NO_TRADE", 0.0, {}
 
-        if last_close <= vwap and cvd <= 0 and upper_wick >= body * 0.20:
-            return "PUT (DOWN) 🔴", last_close, meta
+    sma20 = np.mean(closes[-20:])
+    std20 = np.std(closes[-20:])
+    upper_band = sma20 + (2.0 * std20)
+    lower_band = sma20 - (2.0 * std20)
 
-        return "NO_TRADE", last_close, meta
+    rsi = calculate_rsi(closes, 14)
 
-async def monitor_trade_expiry(sym, pair_name, action_type, entry_price, entry_str, exit_str):
-    try:
-        await asyncio.sleep(295)
-        exit_price = latest_quotes.get(sym, entry_price)
-        result = "WIN" if (exit_price > entry_price if "CALL" in action_type else exit_price < entry_price) else "LOSS"
-        await engine.process_result(result, sym, pair_name, entry_price, exit_price, entry_str, exit_str)
-    except Exception as e:
-        print(f"Expiry Error: {e}")
-    finally:
-        async with engine.lock:
-            engine.active_trade = False
+    ema12 = calc_ema(closes, 12)
+    ema26 = calc_ema(closes, 26)
+    macd_line = ema12 - ema26
+    signal_line = calc_ema(macd_line, 9)
+    macd_hist = macd_line[-1] - signal_line[-1]
 
-async def run_forex_master():
-    asyncio.create_task(telegram_command_listener())
-    await engine.send_telegram("🚀 *PRECISION ENGINE ENGAGED: READY FOR SIGNALS*")
+    ema9 = calc_ema(closes, 9)[-1]
+    ema21 = calc_ema(closes, 21)[-1]
 
+    meta = {
+        "RSI": round(rsi, 2),
+        "MACD_Hist": "Bullish" if macd_hist > 0 else "Bearish",
+        "Category": "",
+        "Pattern": "",
+        "Reason": ""
+    }
+
+    # CATEGORY 1: Bollinger Reversal + Wick Confirmation
+    if h1 >= upper_band and upper_wick >= body * 0.40 and macd_hist < 0:
+        meta["Category"] = "Category 1: Bollinger Reversal"
+        meta["Pattern"] = "Upper Band Rejection + MACD Turn"
+        meta["Reason"] = "Overbought exhaustion confirmed with rejection wick."
+        return "PUT (DOWN) 🔴", c1, meta
+
+    if l1 <= lower_band and lower_wick >= body * 0.40 and macd_hist > 0:
+        meta["Category"] = "Category 1: Bollinger Reversal"
+        meta["Pattern"] = "Lower Band Bounce + MACD Turn"
+        meta["Reason"] = "Oversold liquidity reclaim confirmed with rejection wick."
+        return "CALL (UP) 🟢", c1, meta
+
+    # CATEGORY 2: Extreme RSI Snatch
+    if rsi >= 72 and c1 < o1:
+        meta["Category"] = "Category 2: Extreme RSI Snatch"
+        meta["Pattern"] = f"RSI Exhaustion ({round(rsi, 1)})"
+        meta["Reason"] = "Asset over-extended with immediate seller volume."
+        return "PUT (DOWN) 🔴", c1, meta
+
+    if rsi <= 28 and c1 > o1:
+        meta["Category"] = "Category 2: Extreme RSI Snatch"
+        meta["Pattern"] = f"RSI Deep Bottom ({round(rsi, 1)})"
+        meta["Reason"] = "Asset deeply oversold with immediate buyer entry."
+        return "CALL (UP) 🟢", c1, meta
+
+    # CATEGORY 3: EMA Momentum Trend Ride
+    if ema9 > ema21 and c1 > o1 and c1 > sma20 and macd_hist > 0 and (52 <= rsi <= 65):
+        meta["Category"] = "Category 3: EMA Trend Momentum"
+        meta["Pattern"] = "Bullish Alignment (EMA 9/21 + MACD)"
+        meta["Reason"] = "Healthy trend expansion with positive volume flow."
+        return "CALL (UP) 🟢", c1, meta
+
+    if ema9 < ema21 and c1 < o1 and c1 < sma20 and macd_hist < 0 and (35 <= rsi <= 48):
+        meta["Category"] = "Category 3: EMA Trend Momentum"
+        meta["Pattern"] = "Bearish Alignment (EMA 9/21 + MACD)"
+        meta["Reason"] = "Sustained trend continuation with negative volume flow."
+        return "PUT (DOWN) 🔴", c1, meta
+
+    # CATEGORY 4: Engulfing Structure Flip
+    if (c2 < o2) and (c1 > o1) and (c1 >= o2) and (o1 <= c2) and (body > abs(c2 - o2) * 1.1) and macd_hist > 0:
+        meta["Category"] = "Category 4: Pure Engulfing Flip"
+        meta["Pattern"] = "Confirmed Bullish Engulfing"
+        meta["Reason"] = "Buyers engulfed sellers with expanding momentum."
+        return "CALL (UP) 🟢", c1, meta
+
+    if (c2 > o2) and (c1 < o1) and (c1 <= o2) and (o1 >= c2) and (body > abs(c2 - o2) * 1.1) and macd_hist < 0:
+        meta["Category"] = "Category 4: Pure Engulfing Flip"
+        meta["Pattern"] = "Confirmed Bearish Engulfing"
+        meta["Reason"] = "Sellers engulfed buyers with expanding momentum."
+        return "PUT (DOWN) 🔴", c1, meta
+
+    return "NO_TRADE", c1, meta
+
+async def monitor_trade(sym, pair_name, action, entry_price, entry_t, exit_t):
+    await asyncio.sleep(295)
+    exit_p = latest_quotes.get(sym, entry_price)
+    win = (exit_p > entry_price) if "CALL" in action else (exit_p < entry_price)
+    max_t = 4 if state.level <= 20 else 6
+
+    if win:
+        state.consecutive_losses = 0
+        if state.trade_step < max_t:
+            state.trade_step += 1
+        else:
+            state.level = 1 if state.level >= 30 else state.level + 1
+            state.trade_step = 1
+        res_msg = (
+            f"✅ *QUOTEX 5M RESULT: WIN* 🟢\n\n"
+            f"📊 *Asset:* {pair_name}\n"
+            f"📍 *Entry:* `{format_price(sym, entry_price)}` ➔ *Exit:* `{format_price(sym, exit_p)}`\n"
+            f"📈 *Ladder:* Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
+            f"💵 *Next Stake:* ${LEVELS_STAKE[state.level]}"
+        )
+    else:
+        state.consecutive_losses += 1
+        state.trade_step = 1
+        res_msg = (
+            f"⚠️ *QUOTEX 5M RESULT: LOSS* 🔴\n\n"
+            f"📊 *Asset:* {pair_name}\n"
+            f"📍 *Entry:* `{format_price(sym, entry_price)}` ➔ *Exit:* `{format_price(sym, exit_p)}`\n"
+            f"🛡️ *Step Reset:* Trade 1/{max_t}\n"
+            f"💵 *Stake:* ${LEVELS_STAKE[state.level]}"
+        )
+        if state.consecutive_losses >= 2:
+            send_tg("🚨 *DISCIPLINE SHIELD ACTIVATED: 2 LOSSES DETECTED*\n⏳ *Bot paused for 60 minutes.*")
+            await asyncio.sleep(3600)
+            state.consecutive_losses = 0
+            state.level = 1
+            send_tg("🟢 *DISCIPLINE SHIELD UNLOCKED: RESUMING AT LEVEL 1*")
+
+    send_tg(res_msg)
+    state.active_trade = False
+
+async def main():
     uri = "wss://ws.derivws.com/websockets/v3?app_id=1089"
+
     while True:
         try:
-            async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
+            async with websockets.connect(uri, ping_interval=15, ping_timeout=15) as ws:
                 for sym in FOREX_PAIRS:
-                    req = {
+                    await ws.send(json.dumps({
                         "ticks_history": sym,
                         "adjust_start_time": 1,
-                        "count": 30,
+                        "count": 40,
                         "end": "latest",
                         "style": "candles",
                         "granularity": 300
-                    }
-                    await ws.send(json.dumps(req))
+                    }))
                     await ws.send(json.dumps({"ticks": sym}))
-                    await asyncio.sleep(0.08)
+                    await asyncio.sleep(0.04)
 
                 while True:
-                    if engine.is_locked:
-                        await asyncio.sleep(5)
-                        continue
                     try:
-                        res = await asyncio.wait_for(ws.recv(), timeout=25.0)
+                        res = await asyncio.wait_for(ws.recv(), timeout=20.0)
                     except asyncio.TimeoutError:
                         await ws.send(json.dumps({"ping": 1}))
                         continue
 
                     data = json.loads(res)
+
                     if "candles" in data:
                         sym = data.get("echo_req", {}).get("ticks_history", "")
                         if sym in FOREX_PAIRS:
                             candles_history[sym] = [
-                                {
-                                    'open': float(c['open']),
-                                    'high': float(c['high']),
-                                    'low': float(c['low']),
-                                    'close': float(c['close']),
-                                    'volume': 100.0
-                                }
+                                {'open': float(c['open']), 'high': float(c['high']), 'low': float(c['low']), 'close': float(c['close'])}
                                 for c in data["candles"]
                             ]
                         continue
@@ -299,73 +318,58 @@ async def run_forex_master():
 
                     price = float(tick.get("quote", 0.0))
                     epoch = int(tick.get("epoch", time.time()))
-                    prev_price = latest_quotes.get(sym, price)
                     latest_quotes[sym] = price
 
-                    delta = 1.0 if price >= prev_price else -1.0
-                    tick_tape[sym].append({'delta': delta})
-                    if len(tick_tape[sym]) > 100:
-                        tick_tape[sym].pop(0)
+                    bucket = epoch // 300
 
-                    candle_bucket = epoch // 300
                     if len(candles_history[sym]) > 0:
                         candles_history[sym][-1]['close'] = price
                         candles_history[sym][-1]['high'] = max(candles_history[sym][-1]['high'], price)
                         candles_history[sym][-1]['low'] = min(candles_history[sym][-1]['low'], price)
-                        candles_history[sym][-1]['volume'] += 1.0
 
-                    if last_checked_bucket[sym] != candle_bucket:
-                        last_checked_bucket[sym] = candle_bucket
-                        candles_history[sym].append({
-                            'open': price,
-                            'high': price,
-                            'low': price,
-                            'close': price,
-                            'volume': 1.0
-                        })
-                        if len(candles_history[sym]) > 45:
+                    if last_checked_bucket[sym] != bucket:
+                        last_checked_bucket[sym] = bucket
+                        candles_history[sym].append({'open': price, 'high': price, 'low': price, 'close': price})
+                        if len(candles_history[sym]) > 50:
                             candles_history[sym].pop(0)
 
-                        if not engine.active_trade and len(candles_history[sym]) >= 20:
-                            sig, alert_price, meta = InstitutionalMatrixAnalyzer.evaluate(
-                                sym, candles_history[sym][:-1], tick_tape[sym]
-                            )
+                        if not state.active_trade and len(candles_history[sym]) >= 30:
+                            sig, alert_p, meta = evaluate_multi_engine(sym, candles_history[sym][:-1])
                             if sig != "NO_TRADE":
-                                async with engine.lock:
-                                    engine.active_trade = True
-
-                                current_ist = get_ist_time(epoch)
-                                entry_str = current_ist.strftime("%H:%M:00 IST")
-                                exit_str = (current_ist + timedelta(minutes=5)).strftime("%H:%M:00 IST")
-                                pair_name = FOREX_PAIRS[sym]['name']
-                                max_sub = engine.get_max_trades(engine.current_level)
-                                stake = LEVELS_STAKE[engine.current_level]
-                                price_fmt = format_price(sym, alert_price)
+                                state.active_trade = True
+                                now_ist = get_ist()
+                                ent_str = now_ist.strftime("%H:%M:00 IST")
+                                ext_str = (now_ist + timedelta(minutes=5)).strftime("%H:%M:00 IST")
+                                p_name = FOREX_PAIRS[sym]['name']
+                                max_t = 4 if state.level <= 20 else 6
+                                stk = LEVELS_STAKE[state.level]
 
                                 alert = (
-                                    f"🎯 *PRECISION QUANT SIGNAL*\n\n"
-                                    f"📊 *Asset:* {pair_name}\n"
+                                    f"🎯 *CONFIRMED QUOTEX SIGNAL*\n\n"
+                                    f"📊 *Asset:* `{p_name}`\n"
                                     f"🚀 *Action:* {sig}\n"
-                                    f"⏱️ *ENTRY:* `{entry_str}` ➔ *EXPIRY:* `{exit_str}`\n"
-                                    f"📈 *Ladder:* Level {engine.current_level}/30 ({engine.current_trade_in_level}/{max_sub})\n"
-                                    f"💵 *Stake:* ${stake}\n"
-                                    f"📍 *Spot:* `{price_fmt}`\n\n"
-                                    f"🔬 *Telemetry:*\n"
-                                    f"• *Controller:* {meta.get('Controller', 'BUYERS')}\n"
-                                    f"• *POC:* `{meta.get('POC', '0.0')}` | *VWAP:* `{meta.get('VWAP', '0.0')}`\n"
-                                    f"• *CVD:* {meta.get('CVD', 'NEUTRAL')}\n\n"
-                                    f"⚠️ Quotex 0-second open candle execution."
+                                    f"⏳ *Expiry:* 5 Minutes (1 Candle)\n"
+                                    f"⏱️ *Entry:* `{ent_str}` ➔ *Exit:* `{ext_str}`\n"
+                                    f"📈 *Ladder:* Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
+                                    f"💵 *Stake:* ${stk}\n"
+                                    f"📍 *Spot:* `{format_price(sym, alert_p)}`\n\n"
+                                    f"⚙️ *Strategy:* {meta.get('Category')}\n"
+                                    f"🔍 *Pattern:* {meta.get('Pattern')}\n"
+                                    f"🛡️ *MACD Flow:* {meta.get('MACD_Hist')} | *RSI:* {meta.get('RSI')}\n\n"
+                                    f"⚠️ *Execution:* Quotex mein theek 0-second par trade execute karein."
                                 )
-                                await engine.send_telegram(alert)
-                                asyncio.create_task(monitor_trade_expiry(sym, pair_name, sig, alert_price, entry_str, exit_str))
+                                send_tg(alert)
+                                asyncio.create_task(monitor_trade(sym, p_name, sig, alert_p, ent_str, ext_str))
 
         except Exception as e:
-            print(f"Reconnect Sleep: {e}")
-            await asyncio.sleep(3)
+            print(f"WS Exception: {e}")
+            await asyncio.sleep(2)
 
 if __name__ == "__main__":
     while True:
         try:
-            asyncio.run(run_forex_master())
-        except Exception:
+            asyncio.run(main())
+        except Exception as err:
+            print(f"Engine Loop Restart: {err}")
             time.sleep(2)
+    
