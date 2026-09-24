@@ -9,12 +9,12 @@ import asyncio
 import numpy as np
 import websockets
 
-# Flask Web Server (Render Health Check)
+# Flask Web Server
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "QUOTEX MULTI-ENGINE TRIPLE FILTER ONLINE", 200
+    return "QX FAST SIGNAL ENGINE ONLINE", 200
 
 def start_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -63,12 +63,12 @@ def format_price(sym, p):
 def send_tg(text):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        data = json.dumps({"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}).encode('utf-8')
+        data = json.dumps({"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}).encode('utf-8')
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=6):
+        with urllib.request.urlopen(req, timeout=5):
             pass
     except Exception as e:
-        print(f"TG Send Error: {e}")
+        print(f"TG Error: {e}")
 
 class EngineState:
     def __init__(self):
@@ -79,13 +79,14 @@ class EngineState:
 
 state = EngineState()
 
+# Non-blocking Telegram Polling
 def telegram_listener():
     offset = 0
     while True:
         try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}&timeout=5"
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}&timeout=2"
             req = urllib.request.Request(url)
-            with urllib.request.urlopen(req, timeout=8) as r:
+            with urllib.request.urlopen(req, timeout=5) as r:
                 res = json.loads(r.read().decode('utf-8'))
                 if res.get("ok"):
                     for u in res.get("result", []):
@@ -98,14 +99,12 @@ def telegram_listener():
                             st = LEVELS_STAKE[state.level]
                             t_str = get_ist().strftime("%H:%M:%S IST")
                             reply = (
-                                f"📊 *QUOTEX MULTI-STRATEGY ENGINE*\n\n"
-                                f"🟢 *Status:* 100% Online & Stable\n"
-                                f"🕒 *Time:* `{t_str}`\n"
-                                f"📈 *Ladder:* Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
-                                f"💵 *Next Stake:* ${st}\n"
-                                f"🚨 *Loss Streak:* {state.consecutive_losses}/2\n"
-                                f"🛡️ *Filters:* MACD + ATR + Rejection Guard\n"
-                                f"🔍 *Pairs Monitored:* 11 Forex/Gold Pairs"
+                                f"🟢 <b>QUOTEX SCANNER LIVE</b>\n\n"
+                                f"🕒 <b>Time:</b> <code>{t_str}</code>\n"
+                                f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
+                                f"💵 <b>Stake:</b> ${st}\n"
+                                f"🚨 <b>Loss Count:</b> {state.consecutive_losses}/2\n"
+                                f"🔍 <b>Pairs:</b> 11 Live Pairs Scanning"
                             )
                             send_tg(reply)
         except Exception:
@@ -113,13 +112,6 @@ def telegram_listener():
         time.sleep(1)
 
 threading.Thread(target=telegram_listener, daemon=True).start()
-
-def calc_ema(arr, span):
-    alpha = 2 / (span + 1)
-    res = [arr[0]]
-    for val in arr[1:]:
-        res.append(res[-1] * (1 - alpha) + val * alpha)
-    return np.array(res)
 
 def calculate_rsi(prices, period=14):
     if len(prices) < period + 1:
@@ -134,8 +126,8 @@ def calculate_rsi(prices, period=14):
     rs = avg_gain / avg_loss
     return 100.0 - (100.0 / (1.0 + rs))
 
-def evaluate_multi_engine(sym, candles):
-    if len(candles) < 30:
+def evaluate_fast_qx_signal(sym, candles):
+    if len(candles) < 20:
         return "NO_TRADE", 0.0, {}
 
     closes = np.array([c['close'] for c in candles])
@@ -150,84 +142,45 @@ def evaluate_multi_engine(sym, candles):
     lower_wick = min(o1, c1) - l1
     upper_wick = h1 - max(o1, c1)
 
-    # Fake Signal Filter: Indecision Doji Protection
-    if body < (h1 - l1) * 0.15:
-        return "NO_TRADE", 0.0, {}
-
+    # Bollinger Bands
     sma20 = np.mean(closes[-20:])
     std20 = np.std(closes[-20:])
-    upper_band = sma20 + (2.0 * std20)
-    lower_band = sma20 - (2.0 * std20)
+    upper_band = sma20 + (1.95 * std20)
+    lower_band = sma20 - (1.95 * std20)
 
+    # RSI
     rsi = calculate_rsi(closes, 14)
-
-    ema12 = calc_ema(closes, 12)
-    ema26 = calc_ema(closes, 26)
-    macd_line = ema12 - ema26
-    signal_line = calc_ema(macd_line, 9)
-    macd_hist = macd_line[-1] - signal_line[-1]
-
-    ema9 = calc_ema(closes, 9)[-1]
-    ema21 = calc_ema(closes, 21)[-1]
 
     meta = {
         "RSI": round(rsi, 2),
-        "MACD_Hist": "Bullish" if macd_hist > 0 else "Bearish",
-        "Category": "",
-        "Pattern": "",
-        "Reason": ""
+        "Setup": ""
     }
 
-    # CATEGORY 1: Bollinger Reversal + Wick Confirmation
-    if h1 >= upper_band and upper_wick >= body * 0.40 and macd_hist < 0:
-        meta["Category"] = "Category 1: Bollinger Reversal"
-        meta["Pattern"] = "Upper Band Rejection + MACD Turn"
-        meta["Reason"] = "Overbought exhaustion confirmed with rejection wick."
+    # Setup 1: High-Probability Bollinger Wick Rejection
+    if h1 >= upper_band and upper_wick >= body * 0.25:
+        meta["Setup"] = "Bollinger Upper Wick Rejection"
         return "PUT (DOWN) 🔴", c1, meta
 
-    if l1 <= lower_band and lower_wick >= body * 0.40 and macd_hist > 0:
-        meta["Category"] = "Category 1: Bollinger Reversal"
-        meta["Pattern"] = "Lower Band Bounce + MACD Turn"
-        meta["Reason"] = "Oversold liquidity reclaim confirmed with rejection wick."
+    if l1 <= lower_band and lower_wick >= body * 0.25:
+        meta["Setup"] = "Bollinger Lower Wick Rejection"
         return "CALL (UP) 🟢", c1, meta
 
-    # CATEGORY 2: Extreme RSI Snatch
-    if rsi >= 72 and c1 < o1:
-        meta["Category"] = "Category 2: Extreme RSI Snatch"
-        meta["Pattern"] = f"RSI Exhaustion ({round(rsi, 1)})"
-        meta["Reason"] = "Asset over-extended with immediate seller volume."
+    # Setup 2: RSI Exhaustion Snatch
+    if rsi >= 68:
+        meta["Setup"] = f"RSI Overbought Snatch ({round(rsi, 1)})"
         return "PUT (DOWN) 🔴", c1, meta
 
-    if rsi <= 28 and c1 > o1:
-        meta["Category"] = "Category 2: Extreme RSI Snatch"
-        meta["Pattern"] = f"RSI Deep Bottom ({round(rsi, 1)})"
-        meta["Reason"] = "Asset deeply oversold with immediate buyer entry."
+    if rsi <= 32:
+        meta["Setup"] = f"RSI Oversold Snatch ({round(rsi, 1)})"
         return "CALL (UP) 🟢", c1, meta
 
-    # CATEGORY 3: EMA Momentum Trend Ride
-    if ema9 > ema21 and c1 > o1 and c1 > sma20 and macd_hist > 0 and (52 <= rsi <= 65):
-        meta["Category"] = "Category 3: EMA Trend Momentum"
-        meta["Pattern"] = "Bullish Alignment (EMA 9/21 + MACD)"
-        meta["Reason"] = "Healthy trend expansion with positive volume flow."
+    # Setup 3: Solid Engulfing Strike
+    if (c2 < o2) and (c1 > o1) and (c1 >= o2) and (o1 <= c2):
+        meta["Setup"] = "Bullish Engulfing Candle"
         return "CALL (UP) 🟢", c1, meta
 
-    if ema9 < ema21 and c1 < o1 and c1 < sma20 and macd_hist < 0 and (35 <= rsi <= 48):
-        meta["Category"] = "Category 3: EMA Trend Momentum"
-        meta["Pattern"] = "Bearish Alignment (EMA 9/21 + MACD)"
-        meta["Reason"] = "Sustained trend continuation with negative volume flow."
-        return "PUT (DOWN) 🔴", c1, meta
-
-    # CATEGORY 4: Engulfing Structure Flip
-    if (c2 < o2) and (c1 > o1) and (c1 >= o2) and (o1 <= c2) and (body > abs(c2 - o2) * 1.1) and macd_hist > 0:
-        meta["Category"] = "Category 4: Pure Engulfing Flip"
-        meta["Pattern"] = "Confirmed Bullish Engulfing"
-        meta["Reason"] = "Buyers engulfed sellers with expanding momentum."
-        return "CALL (UP) 🟢", c1, meta
-
-    if (c2 > o2) and (c1 < o1) and (c1 <= o2) and (o1 >= c2) and (body > abs(c2 - o2) * 1.1) and macd_hist < 0:
-        meta["Category"] = "Category 4: Pure Engulfing Flip"
-        meta["Pattern"] = "Confirmed Bearish Engulfing"
-        meta["Reason"] = "Sellers engulfed buyers with expanding momentum."
+    if (c2 > o2) and (c1 < o1) and (c1 <= o2) and (o1 >= c2):
+        meta["Setup"] = "Bearish Engulfing Candle"
         return "PUT (DOWN) 🔴", c1, meta
 
     return "NO_TRADE", c1, meta
@@ -246,33 +199,34 @@ async def monitor_trade(sym, pair_name, action, entry_price, entry_t, exit_t):
             state.level = 1 if state.level >= 30 else state.level + 1
             state.trade_step = 1
         res_msg = (
-            f"✅ *QUOTEX 5M RESULT: WIN* 🟢\n\n"
-            f"📊 *Asset:* {pair_name}\n"
-            f"📍 *Entry:* `{format_price(sym, entry_price)}` ➔ *Exit:* `{format_price(sym, exit_p)}`\n"
-            f"📈 *Ladder:* Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
-            f"💵 *Next Stake:* ${LEVELS_STAKE[state.level]}"
+            f"✅ <b>QUOTEX 5M RESULT: WIN</b> 🟢\n\n"
+            f"📊 <b>Asset:</b> {pair_name}\n"
+            f"📍 <b>Entry:</b> <code>{format_price(sym, entry_price)}</code> ➔ <b>Exit:</b> <code>{format_price(sym, exit_p)}</code>\n"
+            f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
+            f"💵 <b>Next Stake:</b> ${LEVELS_STAKE[state.level]}"
         )
     else:
         state.consecutive_losses += 1
         state.trade_step = 1
         res_msg = (
-            f"⚠️ *QUOTEX 5M RESULT: LOSS* 🔴\n\n"
-            f"📊 *Asset:* {pair_name}\n"
-            f"📍 *Entry:* `{format_price(sym, entry_price)}` ➔ *Exit:* `{format_price(sym, exit_p)}`\n"
-            f"🛡️ *Step Reset:* Trade 1/{max_t}\n"
-            f"💵 *Stake:* ${LEVELS_STAKE[state.level]}"
+            f"⚠️ <b>QUOTEX 5M RESULT: LOSS</b> 🔴\n\n"
+            f"📊 <b>Asset:</b> {pair_name}\n"
+            f"📍 <b>Entry:</b> <code>{format_price(sym, entry_price)}</code> ➔ <b>Exit:</b> <code>{format_price(sym, exit_p)}</code>\n"
+            f"🛡️ <b>Step Reset:</b> Trade 1/{max_t}\n"
+            f"💵 <b>Stake:</b> ${LEVELS_STAKE[state.level]}"
         )
         if state.consecutive_losses >= 2:
-            send_tg("🚨 *DISCIPLINE SHIELD ACTIVATED: 2 LOSSES DETECTED*\n⏳ *Bot paused for 60 minutes.*")
+            send_tg("🚨 <b>DISCIPLINE LOCK: 2 LOSSES</b>\n⏳ <i>Bot paused for 60 mins.</i>")
             await asyncio.sleep(3600)
             state.consecutive_losses = 0
             state.level = 1
-            send_tg("🟢 *DISCIPLINE SHIELD UNLOCKED: RESUMING AT LEVEL 1*")
+            send_tg("🟢 <b>LOCK OVER: RESUMING AT LEVEL 1</b>")
 
     send_tg(res_msg)
     state.active_trade = False
 
 async def main():
+    send_tg("🚀 <b>QUOTEX BOT ENGAGED: READY FOR SIGNALS</b>")
     uri = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 
     while True:
@@ -282,7 +236,7 @@ async def main():
                     await ws.send(json.dumps({
                         "ticks_history": sym,
                         "adjust_start_time": 1,
-                        "count": 40,
+                        "count": 30,
                         "end": "latest",
                         "style": "candles",
                         "granularity": 300
@@ -330,11 +284,11 @@ async def main():
                     if last_checked_bucket[sym] != bucket:
                         last_checked_bucket[sym] = bucket
                         candles_history[sym].append({'open': price, 'high': price, 'low': price, 'close': price})
-                        if len(candles_history[sym]) > 50:
+                        if len(candles_history[sym]) > 40:
                             candles_history[sym].pop(0)
 
-                        if not state.active_trade and len(candles_history[sym]) >= 30:
-                            sig, alert_p, meta = evaluate_multi_engine(sym, candles_history[sym][:-1])
+                        if not state.active_trade and len(candles_history[sym]) >= 20:
+                            sig, alert_p, meta = evaluate_fast_qx_signal(sym, candles_history[sym][:-1])
                             if sig != "NO_TRADE":
                                 state.active_trade = True
                                 now_ist = get_ist()
@@ -345,18 +299,17 @@ async def main():
                                 stk = LEVELS_STAKE[state.level]
 
                                 alert = (
-                                    f"🎯 *CONFIRMED QUOTEX SIGNAL*\n\n"
-                                    f"📊 *Asset:* `{p_name}`\n"
-                                    f"🚀 *Action:* {sig}\n"
-                                    f"⏳ *Expiry:* 5 Minutes (1 Candle)\n"
-                                    f"⏱️ *Entry:* `{ent_str}` ➔ *Exit:* `{ext_str}`\n"
-                                    f"📈 *Ladder:* Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
-                                    f"💵 *Stake:* ${stk}\n"
-                                    f"📍 *Spot:* `{format_price(sym, alert_p)}`\n\n"
-                                    f"⚙️ *Strategy:* {meta.get('Category')}\n"
-                                    f"🔍 *Pattern:* {meta.get('Pattern')}\n"
-                                    f"🛡️ *MACD Flow:* {meta.get('MACD_Hist')} | *RSI:* {meta.get('RSI')}\n\n"
-                                    f"⚠️ *Execution:* Quotex mein theek 0-second par trade execute karein."
+                                    f"🎯 <b>QUOTEX 5M SIGNAL DETECTED</b>\n\n"
+                                    f"📊 <b>Asset:</b> <code>{p_name}</code>\n"
+                                    f"🚀 <b>Action:</b> {sig}\n"
+                                    f"⏳ <b>Expiry:</b> 5 Minutes\n"
+                                    f"⏱️ <b>Entry:</b> <code>{ent_str}</code> ➔ <b>Exit:</b> <code>{ext_str}</code>\n"
+                                    f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
+                                    f"💵 <b>Stake:</b> ${stk}\n"
+                                    f"📍 <b>Spot:</b> <code>{format_price(sym, alert_p)}</code>\n\n"
+                                    f"⚙️ <b>Trigger:</b> {meta.get('Setup')}\n"
+                                    f"📊 <b>RSI:</b> {meta.get('RSI')}\n\n"
+                                    f"⚠️ <b>Execution:</b> Quotex me agli candle open hote hi trade lagayein."
                                 )
                                 send_tg(alert)
                                 asyncio.create_task(monitor_trade(sym, p_name, sig, alert_p, ent_str, ext_str))
@@ -370,6 +323,5 @@ if __name__ == "__main__":
         try:
             asyncio.run(main())
         except Exception as err:
-            print(f"Engine Loop Restart: {err}")
+            print(f"Process Restart: {err}")
             time.sleep(2)
-    
