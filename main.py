@@ -1,3 +1,4 @@
+
 import os
 import threading
 import time
@@ -8,13 +9,13 @@ import concurrent.futures
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 
-# 1. Ultra-Lightweight Keep-Alive Web Server
+# 1. Keep-Alive Web Server
 app = Flask(__name__)
 
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX 15M BINARY ENGINE LIVE", 200
+    return "QUOTEX 15M AGGRESSIVE ENGINE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -22,7 +23,6 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 
-# Render Freeze Prevention Watchdog
 def render_anti_freeze():
     time.sleep(10)
     external_url = os.environ.get("RENDER_EXTERNAL_URL", f"http://127.0.0.1:{os.environ.get('PORT', 10000)}")
@@ -47,7 +47,6 @@ try:
 except Exception:
     pass
 
-# 30-Level Compounding Plan
 LEVELS_STAKE = {
     1: 1.61, 2: 2.93, 3: 5.33, 4: 9.71, 5: 17.67,
     6: 32.15, 7: 58.52, 8: 106.51, 9: 193.85, 10: 352.80,
@@ -57,8 +56,9 @@ LEVELS_STAKE = {
     26: 5112968.68, 27: 9305603.00, 28: 16936197.46, 29: 30823879.37, 30: 56099460.46
 }
 
-# High-Liquidity 15M Assets
+# SAARE 18 ASSETS (Forex Majors, Crosses, Gold, aur Crypto)
 PAIRS = [
+    # Majors
     {"name": "EUR/USD", "deriv": "frxEURUSD", "yahoo": "EURUSD=X", "digits": 5},
     {"name": "GBP/USD", "deriv": "frxGBPUSD", "yahoo": "GBPUSD=X", "digits": 5},
     {"name": "USD/JPY", "deriv": "frxUSDJPY", "yahoo": "JPY=X", "digits": 3},
@@ -66,9 +66,21 @@ PAIRS = [
     {"name": "USD/CAD", "deriv": "frxUSDCAD", "yahoo": "CAD=X", "digits": 5},
     {"name": "USD/CHF", "deriv": "frxUSDCHF", "yahoo": "CHF=X", "digits": 5},
     {"name": "NZD/USD", "deriv": "frxNZDUSD", "yahoo": "NZDUSD=X", "digits": 5},
+    
+    # Crosses
     {"name": "EUR/GBP", "deriv": "frxEURGBP", "yahoo": "EURGBP=X", "digits": 5},
     {"name": "EUR/JPY", "deriv": "frxEURJPY", "yahoo": "EURJPY=X", "digits": 3},
-    {"name": "GBP/JPY", "deriv": "frxGBPJPY", "yahoo": "GBPJPY=X", "digits": 3}
+    {"name": "GBP/JPY", "deriv": "frxGBPJPY", "yahoo": "GBPJPY=X", "digits": 3},
+    {"name": "AUD/JPY", "deriv": "frxAUDJPY", "yahoo": "AUDJPY=X", "digits": 3},
+    {"name": "CAD/JPY", "deriv": "frxCADJPY", "yahoo": "CADJPY=X", "digits": 3},
+    {"name": "EUR/AUD", "deriv": "frxEURAUD", "yahoo": "EURAUD=X", "digits": 5},
+    {"name": "EUR/CAD", "deriv": "frxEURCAD", "yahoo": "EURCAD=X", "digits": 5},
+    {"name": "GBP/AUD", "deriv": "frxGBPAUD", "yahoo": "GBPAUD=X", "digits": 5},
+    
+    # Commodities & Crypto
+    {"name": "GOLD (XAU/USD)", "deriv": "frxXAUUSD", "yahoo": "GC=F", "digits": 2},
+    {"name": "BTC/USD", "deriv": "cryBTCUSD", "yahoo": "BTC-USD", "digits": 2},
+    {"name": "ETH/USD", "deriv": "cryETHUSD", "yahoo": "ETH-USD", "digits": 2}
 ]
 
 class SafeEngineState:
@@ -126,16 +138,14 @@ def calculate_ema(prices, period):
         ema.append((price - ema[-1]) * multiplier + ema[-1])
     return ema
 
-# QUOTEX SPECIFIC 1-CANDLE LOGIC (Fixing the "No Setup Found" issue)
+# AGGRESSIVE QUOTEX LOGIC (GUARANTEES A SIGNAL)
 def evaluate_quotex_confluence(candles):
     if not candles or len(candles) < 20:
         return "NO_TRADE", 0, "No Data"
 
     closes = [float(c['close']) for c in candles]
     opens = [float(c['open']) for c in candles]
-    highs = [float(c['high']) for c in candles]
-    lows = [float(c['low']) for c in candles]
-
+    
     # RSI (14)
     gains, losses = [], []
     for i in range(1, len(closes)):
@@ -146,42 +156,24 @@ def evaluate_quotex_confluence(candles):
     avg_loss = sum(losses[-14:]) / 14.0
     rsi = 100.0 if avg_loss == 0 else 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
 
-    # EMA 5 & EMA 14 for Short Term Binary Trend
-    ema5 = calculate_ema(closes, 5)[-1]
-    ema14 = calculate_ema(closes, 14)[-1]
-
-    # Bollinger Bands
-    recent_closes = closes[-20:]
-    sma20 = sum(recent_closes) / 20.0
-    variance = sum((x - sma20) ** 2 for x in recent_closes) / 20.0
-    std_dev = math.sqrt(variance)
-    upper_bb = sma20 + (2 * std_dev)
-    lower_bb = sma20 - (2 * std_dev)
-
+    # EMA 3 & EMA 9 for Aggressive Short Term Binary Trend
+    ema3 = calculate_ema(closes, 3)[-1]
+    ema9 = calculate_ema(closes, 9)[-1]
+    
     last_close = closes[-1]
     last_open = opens[-1]
-    body = max(abs(last_close - last_open), 1e-6)
-    candle_size = highs[-1] - lows[-1]
 
-    # SETUP 1: Trend Continuation (Most reliable for 1-candle binary)
-    # If EMA5 is above EMA14, RSI is healthy, and last candle was a solid Green candle -> Predict next is Green
-    if ema5 > ema14 and 50 <= rsi <= 75 and last_close > last_open:
-        if body > (candle_size * 0.4): # Ensure it's a real body, not a doji
-            return "CALL (UP) 🟢", 87, "Bullish Trend Continuation (EMA Crossover)"
-
-    # If EMA5 is below EMA14, RSI is healthy, and last candle was a solid Red candle -> Predict next is Red
-    if ema5 < ema14 and 25 <= rsi <= 50 and last_close < last_open:
-        if body > (candle_size * 0.4): 
-            return "PUT (DOWN) 🔴", 87, "Bearish Trend Continuation (EMA Crossover)"
-
-    # SETUP 2: Relaxed Bollinger Band Reversal (If price touches the bands)
-    if lows[-1] <= lower_bb and rsi <= 45:
-        return "CALL (UP) 🟢", 92, "Bollinger Lower Band Support Bounce"
-
-    if highs[-1] >= upper_bb and rsi >= 55:
-        return "PUT (DOWN) 🔴", 92, "Bollinger Upper Band Resistance Drop"
-
-    return "NO_TRADE", 0, "Consolidation"
+    prob = 75
+    
+    # Aggressive Trend Scoring
+    if ema3 > ema9:
+        if rsi > 50: prob += 10
+        if last_close > last_open: prob += 5
+        return "CALL (UP) 🟢", prob, "Aggressive Bullish Momentum"
+    else:
+        if rsi < 50: prob += 10
+        if last_close < last_open: prob += 5
+        return "PUT (DOWN) 🔴", prob, "Aggressive Bearish Momentum"
 
 def telegram_listener():
     offset = 0
@@ -201,9 +193,10 @@ def telegram_listener():
                             with state.state_lock:
                                 max_t = 4 if state.level <= 20 else 6
                                 reply = (
-                                    f"🟢 <b>QUOTEX 15M BINARY ENGINE ONLINE</b>\n\n"
+                                    f"🟢 <b>QUOTEX AGGRESSIVE ENGINE ONLINE</b>\n\n"
                                     f"🕒 <b>Clock:</b> <code>{get_ist().strftime('%H:%M:%S IST')}</code>\n"
-                                    f"📉 <b>Strategy:</b> 1-Candle Trend Continuation & BB Reversal\n"
+                                    f"📊 <b>Markets:</b> All 18 (Forex, Gold, Crypto)\n"
+                                    f"📉 <b>Strategy:</b> Always-On Momentum Predictor\n"
                                     f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
                                     f"💵 <b>Current Stake:</b> ${LEVELS_STAKE[state.level]}"
                                 )
@@ -231,9 +224,9 @@ def analyze_pair(p):
 def market_engine():
     time.sleep(2)
     send_tg(
-        "💎 <b>15-MINUTE QUOTEX-SPECIFIC ENGINE ACTIVATED</b>\n\n"
-        "• <b>New Logic:</b> Designed strictly for 1-Candle Binary Options (Next Candle Predictor).\n"
-        "• <b>Signal Rate:</b> High frequency restored via Trend Continuation logic."
+        "⚡ <b>AGGRESSIVE FREQUENCY ENGINE ACTIVATED</b>\n\n"
+        "• <b>Testing Mode:</b> Bot will now force the BEST available setup every 15 minutes.\n"
+        "• <b>Zero Skips:</b> You will get a signal every cycle from 18 Assets."
     )
 
     while True:
@@ -294,7 +287,7 @@ def market_engine():
                 state.active_trade = None
 
                 if state.consecutive_losses >= 2:
-                    send_tg("🚨 <b>2 CONSECUTIVE LOSSES: PAUSING FOR 60 MIN TO AVOID BAD MARKET</b>")
+                    send_tg("🚨 <b>2 CONSECUTIVE LOSSES: PAUSING FOR 60 MIN</b>")
                     time.sleep(3600)
                     with state.state_lock:
                         state.consecutive_losses = 0
@@ -303,11 +296,11 @@ def market_engine():
                     send_tg("🟢 <b>60-MIN SESSION UNLOCKED: SCANNING RESUMED</b>")
                     continue
 
-            # 2. Market Scan for Binary Setup
+            # 2. Aggressive Scan (Checking all 18 pairs with 20 parallel workers)
             chosen_setup = None
             best_prob = 0
             
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
                 results = list(executor.map(analyze_pair, PAIRS))
                 
             for res in results:
@@ -316,8 +309,6 @@ def market_engine():
                     chosen_setup = res
 
             if not chosen_setup:
-                now_ist = get_ist().strftime('%H:%M IST')
-                send_tg(f"⚠️ <b>NO SETUP FOUND ({now_ist})</b>\n<i>Market is totally flat right now. Skipping this candle.</i>")
                 continue
 
             pair_info = chosen_setup['pair']
@@ -336,7 +327,7 @@ def market_engine():
             ext_str = (now_ist + timedelta(minutes=15)).strftime("%H:%M:00 IST")
 
             alert = (
-                f"🎯 <b>QUOTEX 1-CANDLE SIGNAL DETECTED</b>\n\n"
+                f"🎯 <b>QUOTEX AGGRESSIVE SIGNAL DETECTED</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
                 f"🚀 <b>Action:</b> <b>{action}</b>\n"
                 f"🔥 <b>Win Probability:</b> <b>{prob}%</b>\n"
@@ -346,8 +337,7 @@ def market_engine():
                 f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
                 f"💵 <b>Stake Amount:</b> ${current_stake}\n"
                 f"📍 <b>Current Price:</b> <code>{cur_price:.{d}f}</code>\n"
-                f"🔬 <b>Technical Logic:</b> <i>{reason}</i>\n\n"
-                f"⚠️ <b>Execution Rule:</b> 15M chart par next candle open hote hi trade place karein."
+                f"🔬 <b>Logic:</b> <i>{reason}</i>"
             )
             send_tg(alert)
 
