@@ -1,4 +1,3 @@
-
 import os
 import threading
 import time
@@ -56,9 +55,7 @@ LEVELS_STAKE = {
     26: 5112968.68, 27: 9305603.00, 28: 16936197.46, 29: 30823879.37, 30: 56099460.46
 }
 
-# SAARE 18 ASSETS (Forex Majors, Crosses, Gold, aur Crypto)
 PAIRS = [
-    # Majors
     {"name": "EUR/USD", "deriv": "frxEURUSD", "yahoo": "EURUSD=X", "digits": 5},
     {"name": "GBP/USD", "deriv": "frxGBPUSD", "yahoo": "GBPUSD=X", "digits": 5},
     {"name": "USD/JPY", "deriv": "frxUSDJPY", "yahoo": "JPY=X", "digits": 3},
@@ -66,8 +63,6 @@ PAIRS = [
     {"name": "USD/CAD", "deriv": "frxUSDCAD", "yahoo": "CAD=X", "digits": 5},
     {"name": "USD/CHF", "deriv": "frxUSDCHF", "yahoo": "CHF=X", "digits": 5},
     {"name": "NZD/USD", "deriv": "frxNZDUSD", "yahoo": "NZDUSD=X", "digits": 5},
-    
-    # Crosses
     {"name": "EUR/GBP", "deriv": "frxEURGBP", "yahoo": "EURGBP=X", "digits": 5},
     {"name": "EUR/JPY", "deriv": "frxEURJPY", "yahoo": "EURJPY=X", "digits": 3},
     {"name": "GBP/JPY", "deriv": "frxGBPJPY", "yahoo": "GBPJPY=X", "digits": 3},
@@ -76,8 +71,6 @@ PAIRS = [
     {"name": "EUR/AUD", "deriv": "frxEURAUD", "yahoo": "EURAUD=X", "digits": 5},
     {"name": "EUR/CAD", "deriv": "frxEURCAD", "yahoo": "EURCAD=X", "digits": 5},
     {"name": "GBP/AUD", "deriv": "frxGBPAUD", "yahoo": "GBPAUD=X", "digits": 5},
-    
-    # Commodities & Crypto
     {"name": "GOLD (XAU/USD)", "deriv": "frxXAUUSD", "yahoo": "GC=F", "digits": 2},
     {"name": "BTC/USD", "deriv": "cryBTCUSD", "yahoo": "BTC-USD", "digits": 2},
     {"name": "ETH/USD", "deriv": "cryETHUSD", "yahoo": "ETH-USD", "digits": 2}
@@ -108,6 +101,7 @@ def send_tg(text):
             pass
     threading.Thread(target=_worker, daemon=True).start()
 
+# DUAL API LOGIC FOR UNBREAKABLE LIVE PRICE
 def fetch_live_price(pair_info):
     try:
         url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=2"
@@ -119,17 +113,52 @@ def fetch_live_price(pair_info):
                 return float(candles[-1]['close'])
     except Exception:
         pass
+        
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=1m&range=1d"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        with urllib.request.urlopen(req, timeout=3.0) as res:
+            data = json.loads(res.read().decode('utf-8'))
+            meta = data['chart']['result'][0]['meta']
+            return float(meta.get('regularMarketPrice', 0))
+    except Exception:
+        pass
     return None
 
+# DUAL API LOGIC FOR UNBREAKABLE 15M CANDLES
 def fetch_15m_candles(pair_info):
     try:
         url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=25"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=3.0) as res:
             data = json.loads(res.read().decode('utf-8'))
-            return data.get('candles', [])
+            if 'candles' in data and len(data['candles']) > 0:
+                return data['candles']
     except Exception:
-        return []
+        pass
+
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=15m&range=2d"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        with urllib.request.urlopen(req, timeout=4.0) as res:
+            data = json.loads(res.read().decode('utf-8'))
+            res_data = data['chart']['result'][0]
+            timestamps = res_data['timestamp']
+            quote = res_data['indicators']['quote'][0]
+            candles = []
+            for i in range(len(timestamps)):
+                if quote['close'][i] is not None:
+                    candles.append({
+                        'open': float(quote['open'][i]),
+                        'high': float(quote['high'][i]),
+                        'low': float(quote['low'][i]),
+                        'close': float(quote['close'][i])
+                    })
+            if len(candles) > 0:
+                return candles[-25:]
+    except Exception:
+        pass
+    return []
 
 def calculate_ema(prices, period):
     multiplier = 2 / (period + 1)
@@ -138,7 +167,6 @@ def calculate_ema(prices, period):
         ema.append((price - ema[-1]) * multiplier + ema[-1])
     return ema
 
-# AGGRESSIVE QUOTEX LOGIC (GUARANTEES A SIGNAL)
 def evaluate_quotex_confluence(candles):
     if not candles or len(candles) < 20:
         return "NO_TRADE", 0, "No Data"
@@ -146,7 +174,6 @@ def evaluate_quotex_confluence(candles):
     closes = [float(c['close']) for c in candles]
     opens = [float(c['open']) for c in candles]
     
-    # RSI (14)
     gains, losses = [], []
     for i in range(1, len(closes)):
         delta = closes[i] - closes[i - 1]
@@ -156,7 +183,6 @@ def evaluate_quotex_confluence(candles):
     avg_loss = sum(losses[-14:]) / 14.0
     rsi = 100.0 if avg_loss == 0 else 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
 
-    # EMA 3 & EMA 9 for Aggressive Short Term Binary Trend
     ema3 = calculate_ema(closes, 3)[-1]
     ema9 = calculate_ema(closes, 9)[-1]
     
@@ -165,7 +191,6 @@ def evaluate_quotex_confluence(candles):
 
     prob = 75
     
-    # Aggressive Trend Scoring
     if ema3 > ema9:
         if rsi > 50: prob += 10
         if last_close > last_open: prob += 5
@@ -226,6 +251,7 @@ def market_engine():
     send_tg(
         "⚡ <b>AGGRESSIVE FREQUENCY ENGINE ACTIVATED</b>\n\n"
         "• <b>Testing Mode:</b> Bot will now force the BEST available setup every 15 minutes.\n"
+        "• <b>Dual API Safety:</b> Unbreakable Yahoo + Deriv dual data layer added.\n"
         "• <b>Zero Skips:</b> You will get a signal every cycle from 18 Assets."
     )
 
@@ -238,7 +264,6 @@ def market_engine():
 
             time.sleep(wait_sec)
 
-            # 1. Result Check
             if state.active_trade:
                 t = state.active_trade
                 exit_price = fetch_live_price(t['pair_info'])
@@ -274,7 +299,7 @@ def market_engine():
                     else:
                         state.consecutive_losses += 1
                         state.trade_step = 1
-                        exit_disp = f"{exit_price:.{d}f}" if exit_price else "API Error"
+                        exit_disp = f"{exit_price:.{d}f}" if exit_price else "API Blocked Check"
                         res_msg = (
                             f"⚠️ <b>15M CANDLE RESULT: LOSS</b> 🔴\n\n"
                             f"📊 <b>Asset:</b> {t['name']}\n"
@@ -296,11 +321,11 @@ def market_engine():
                     send_tg("🟢 <b>60-MIN SESSION UNLOCKED: SCANNING RESUMED</b>")
                     continue
 
-            # 2. Aggressive Scan (Checking all 18 pairs with 20 parallel workers)
+            # Safe Speed Scan (max_workers=5 to avoid IP Ban)
             chosen_setup = None
             best_prob = 0
             
-            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 results = list(executor.map(analyze_pair, PAIRS))
                 
             for res in results:
@@ -309,6 +334,8 @@ def market_engine():
                     chosen_setup = res
 
             if not chosen_setup:
+                now_ist = get_ist().strftime('%H:%M IST')
+                send_tg(f"⚠️ <b>DATA FETCH WARNING ({now_ist})</b>\n<i>API failed to fetch data for all 18 pairs. Retrying automatically next cycle.</i>")
                 continue
 
             pair_info = chosen_setup['pair']
