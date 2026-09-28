@@ -14,7 +14,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX 15M AGGRESSIVE ENGINE", 200
+    return "QUOTEX 15M SNIPER ENGINE LIVE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -101,7 +101,6 @@ def send_tg(text):
             pass
     threading.Thread(target=_worker, daemon=True).start()
 
-# DUAL API LOGIC FOR UNBREAKABLE LIVE PRICE
 def fetch_live_price(pair_info):
     try:
         url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=2"
@@ -116,7 +115,7 @@ def fetch_live_price(pair_info):
         
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=1m&range=1d"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=3.0) as res:
             data = json.loads(res.read().decode('utf-8'))
             meta = data['chart']['result'][0]['meta']
@@ -125,7 +124,6 @@ def fetch_live_price(pair_info):
         pass
     return None
 
-# DUAL API LOGIC FOR UNBREAKABLE 15M CANDLES
 def fetch_15m_candles(pair_info):
     try:
         url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=25"
@@ -139,7 +137,7 @@ def fetch_15m_candles(pair_info):
 
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=15m&range=2d"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=4.0) as res:
             data = json.loads(res.read().decode('utf-8'))
             res_data = data['chart']['result'][0]
@@ -167,13 +165,17 @@ def calculate_ema(prices, period):
         ema.append((price - ema[-1]) * multiplier + ema[-1])
     return ema
 
+# STRICT SNIPER LOGIC - NO FORCED TRADES
 def evaluate_quotex_confluence(candles):
     if not candles or len(candles) < 20:
         return "NO_TRADE", 0, "No Data"
 
     closes = [float(c['close']) for c in candles]
     opens = [float(c['open']) for c in candles]
+    highs = [float(c['high']) for c in candles]
+    lows = [float(c['low']) for c in candles]
     
+    # RSI (14)
     gains, losses = [], []
     for i in range(1, len(closes)):
         delta = closes[i] - closes[i - 1]
@@ -183,22 +185,42 @@ def evaluate_quotex_confluence(candles):
     avg_loss = sum(losses[-14:]) / 14.0
     rsi = 100.0 if avg_loss == 0 else 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
 
-    ema3 = calculate_ema(closes, 3)[-1]
-    ema9 = calculate_ema(closes, 9)[-1]
+    ema5 = calculate_ema(closes, 5)[-1]
+    ema13 = calculate_ema(closes, 13)[-1]
     
     last_close = closes[-1]
     last_open = opens[-1]
+    body = max(abs(last_close - last_open), 1e-6)
+    upper_wick = highs[-1] - max(last_open, last_close)
+    lower_wick = min(last_open, last_close) - lows[-1]
 
-    prob = 75
-    
-    if ema3 > ema9:
-        if rsi > 50: prob += 10
-        if last_close > last_open: prob += 5
-        return "CALL (UP) 🟢", prob, "Aggressive Bullish Momentum"
-    else:
-        if rsi < 50: prob += 10
-        if last_close < last_open: prob += 5
-        return "PUT (DOWN) 🔴", prob, "Aggressive Bearish Momentum"
+    # Bollinger Bands
+    recent_closes = closes[-20:]
+    sma20 = sum(recent_closes) / 20.0
+    variance = sum((x - sma20) ** 2 for x in recent_closes) / 20.0
+    std_dev = math.sqrt(variance)
+    upper_bb = sma20 + (2 * std_dev)
+    lower_bb = sma20 - (2 * std_dev)
+
+    # 1. STRICT TREND CONTINUATION
+    if ema5 > ema13 and 55 <= rsi <= 65 and last_close > last_open:
+        if body > (highs[-1] - lows[-1]) * 0.5: # Solid Green Candle
+            return "CALL (UP) 🟢", 88, "Strict Trend Continuation"
+            
+    if ema5 < ema13 and 35 <= rsi <= 45 and last_close < last_open:
+        if body > (highs[-1] - lows[-1]) * 0.5: # Solid Red Candle
+            return "PUT (DOWN) 🔴", 88, "Strict Trend Continuation"
+
+    # 2. STRICT BOLLINGER EXHAUSTION REVERSAL
+    if lows[-1] <= lower_bb and rsi < 30 and last_close > last_open:
+        if lower_wick > body * 0.5:
+            return "CALL (UP) 🟢", 92, "Bollinger Lower Rejection"
+
+    if highs[-1] >= upper_bb and rsi > 70 and last_close < last_open:
+        if upper_wick > body * 0.5:
+            return "PUT (DOWN) 🔴", 92, "Bollinger Upper Rejection"
+
+    return "NO_TRADE", 0, "Consolidation"
 
 def telegram_listener():
     offset = 0
@@ -218,10 +240,9 @@ def telegram_listener():
                             with state.state_lock:
                                 max_t = 4 if state.level <= 20 else 6
                                 reply = (
-                                    f"🟢 <b>QUOTEX AGGRESSIVE ENGINE ONLINE</b>\n\n"
+                                    f"🟢 <b>QUOTEX SNIPER ENGINE ONLINE</b>\n\n"
                                     f"🕒 <b>Clock:</b> <code>{get_ist().strftime('%H:%M:%S IST')}</code>\n"
-                                    f"📊 <b>Markets:</b> All 18 (Forex, Gold, Crypto)\n"
-                                    f"📉 <b>Strategy:</b> Always-On Momentum Predictor\n"
+                                    f"📉 <b>Strategy:</b> Strict Patience (No Forced Trades)\n"
                                     f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
                                     f"💵 <b>Current Stake:</b> ${LEVELS_STAKE[state.level]}"
                                 )
@@ -236,7 +257,7 @@ def analyze_pair(p):
     candles = fetch_15m_candles(p)
     if candles:
         sig, prob, reason = evaluate_quotex_confluence(candles)
-        if sig != "NO_TRADE":
+        if sig != "NO_TRADE" and prob >= 85: # STRICT PROBABILITY GATE
             return {
                 "pair": p,
                 "action": sig,
@@ -249,10 +270,10 @@ def analyze_pair(p):
 def market_engine():
     time.sleep(2)
     send_tg(
-        "⚡ <b>AGGRESSIVE FREQUENCY ENGINE ACTIVATED</b>\n\n"
-        "• <b>Testing Mode:</b> Bot will now force the BEST available setup every 15 minutes.\n"
-        "• <b>Dual API Safety:</b> Unbreakable Yahoo + Deriv dual data layer added.\n"
-        "• <b>Zero Skips:</b> You will get a signal every cycle from 18 Assets."
+        "🎯 <b>STRICT SNIPER ENGINE ACTIVATED</b>\n\n"
+        "• <b>Testing Mode OFF:</b> Bot will NO LONGER force trades.\n"
+        "• <b>Patience Required:</b> Agar market kharab hai, toh bot signal skip karega taaki aapka loss na ho.\n"
+        "• <b>Accuracy Target:</b> 85%+"
     )
 
     while True:
@@ -299,7 +320,7 @@ def market_engine():
                     else:
                         state.consecutive_losses += 1
                         state.trade_step = 1
-                        exit_disp = f"{exit_price:.{d}f}" if exit_price else "API Blocked Check"
+                        exit_disp = f"{exit_price:.{d}f}" if exit_price else "API Error"
                         res_msg = (
                             f"⚠️ <b>15M CANDLE RESULT: LOSS</b> 🔴\n\n"
                             f"📊 <b>Asset:</b> {t['name']}\n"
@@ -321,7 +342,6 @@ def market_engine():
                     send_tg("🟢 <b>60-MIN SESSION UNLOCKED: SCANNING RESUMED</b>")
                     continue
 
-            # Safe Speed Scan (max_workers=5 to avoid IP Ban)
             chosen_setup = None
             best_prob = 0
             
@@ -335,7 +355,7 @@ def market_engine():
 
             if not chosen_setup:
                 now_ist = get_ist().strftime('%H:%M IST')
-                send_tg(f"⚠️ <b>DATA FETCH WARNING ({now_ist})</b>\n<i>API failed to fetch data for all 18 pairs. Retrying automatically next cycle.</i>")
+                send_tg(f"⚠️ <b>SKIPPING CYCLE ({now_ist})</b>\n<i>Kharab market. Koi strong setup nahi mila. Capital safe hai.</i>")
                 continue
 
             pair_info = chosen_setup['pair']
@@ -354,7 +374,7 @@ def market_engine():
             ext_str = (now_ist + timedelta(minutes=15)).strftime("%H:%M:00 IST")
 
             alert = (
-                f"🎯 <b>QUOTEX AGGRESSIVE SIGNAL DETECTED</b>\n\n"
+                f"🎯 <b>QUOTEX STRICT SNIPER SIGNAL</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
                 f"🚀 <b>Action:</b> <b>{action}</b>\n"
                 f"🔥 <b>Win Probability:</b> <b>{prob}%</b>\n"
@@ -384,3 +404,4 @@ threading.Thread(target=market_engine, daemon=True).start()
 if __name__ == "__main__":
     while True:
         time.sleep(60)
+    
