@@ -14,7 +14,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX 15M SNIPER ENGINE LIVE", 200
+    return "QUOTEX 15M BALANCED ENGINE LIVE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -165,7 +165,7 @@ def calculate_ema(prices, period):
         ema.append((price - ema[-1]) * multiplier + ema[-1])
     return ema
 
-# STRICT SNIPER LOGIC - NO FORCED TRADES
+# BALANCED LOGIC: Regular Signals with Safe Filtering
 def evaluate_quotex_confluence(candles):
     if not candles or len(candles) < 20:
         return "NO_TRADE", 0, "No Data"
@@ -185,40 +185,27 @@ def evaluate_quotex_confluence(candles):
     avg_loss = sum(losses[-14:]) / 14.0
     rsi = 100.0 if avg_loss == 0 else 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
 
-    ema5 = calculate_ema(closes, 5)[-1]
-    ema13 = calculate_ema(closes, 13)[-1]
+    ema3 = calculate_ema(closes, 3)[-1]
+    ema9 = calculate_ema(closes, 9)[-1]
     
     last_close = closes[-1]
     last_open = opens[-1]
     body = max(abs(last_close - last_open), 1e-6)
-    upper_wick = highs[-1] - max(last_open, last_close)
-    lower_wick = min(last_open, last_close) - lows[-1]
 
-    # Bollinger Bands
-    recent_closes = closes[-20:]
-    sma20 = sum(recent_closes) / 20.0
-    variance = sum((x - sma20) ** 2 for x in recent_closes) / 20.0
-    std_dev = math.sqrt(variance)
-    upper_bb = sma20 + (2 * std_dev)
-    lower_bb = sma20 - (2 * std_dev)
+    prob = 75 # Base setup probability
+    
+    # BALANCED TREND LOGIC
+    if ema3 > ema9 and last_close > last_open:
+        if rsi > 50: prob += 5
+        if rsi > 60: prob += 5
+        if body > (highs[-1] - lows[-1]) * 0.4: prob += 5 # Solid candle
+        return "CALL (UP) 🟢", prob, "Healthy Bullish Trend"
 
-    # 1. STRICT TREND CONTINUATION
-    if ema5 > ema13 and 55 <= rsi <= 65 and last_close > last_open:
-        if body > (highs[-1] - lows[-1]) * 0.5: # Solid Green Candle
-            return "CALL (UP) 🟢", 88, "Strict Trend Continuation"
-            
-    if ema5 < ema13 and 35 <= rsi <= 45 and last_close < last_open:
-        if body > (highs[-1] - lows[-1]) * 0.5: # Solid Red Candle
-            return "PUT (DOWN) 🔴", 88, "Strict Trend Continuation"
-
-    # 2. STRICT BOLLINGER EXHAUSTION REVERSAL
-    if lows[-1] <= lower_bb and rsi < 30 and last_close > last_open:
-        if lower_wick > body * 0.5:
-            return "CALL (UP) 🟢", 92, "Bollinger Lower Rejection"
-
-    if highs[-1] >= upper_bb and rsi > 70 and last_close < last_open:
-        if upper_wick > body * 0.5:
-            return "PUT (DOWN) 🔴", 92, "Bollinger Upper Rejection"
+    if ema3 < ema9 and last_close < last_open:
+        if rsi < 50: prob += 5
+        if rsi < 40: prob += 5
+        if body > (highs[-1] - lows[-1]) * 0.4: prob += 5 # Solid candle
+        return "PUT (DOWN) 🔴", prob, "Healthy Bearish Trend"
 
     return "NO_TRADE", 0, "Consolidation"
 
@@ -240,9 +227,9 @@ def telegram_listener():
                             with state.state_lock:
                                 max_t = 4 if state.level <= 20 else 6
                                 reply = (
-                                    f"🟢 <b>QUOTEX SNIPER ENGINE ONLINE</b>\n\n"
+                                    f"🟢 <b>QUOTEX BALANCED ENGINE ONLINE</b>\n\n"
                                     f"🕒 <b>Clock:</b> <code>{get_ist().strftime('%H:%M:%S IST')}</code>\n"
-                                    f"📉 <b>Strategy:</b> Strict Patience (No Forced Trades)\n"
+                                    f"📉 <b>Strategy:</b> Balanced Trend Predictor\n"
                                     f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
                                     f"💵 <b>Current Stake:</b> ${LEVELS_STAKE[state.level]}"
                                 )
@@ -257,7 +244,8 @@ def analyze_pair(p):
     candles = fetch_15m_candles(p)
     if candles:
         sig, prob, reason = evaluate_quotex_confluence(candles)
-        if sig != "NO_TRADE" and prob >= 85: # STRICT PROBABILITY GATE
+        # BALANCED GATE: 75% aur usse upar wale setups allow honge
+        if sig != "NO_TRADE" and prob >= 75: 
             return {
                 "pair": p,
                 "action": sig,
@@ -270,10 +258,9 @@ def analyze_pair(p):
 def market_engine():
     time.sleep(2)
     send_tg(
-        "🎯 <b>STRICT SNIPER ENGINE ACTIVATED</b>\n\n"
-        "• <b>Testing Mode OFF:</b> Bot will NO LONGER force trades.\n"
-        "• <b>Patience Required:</b> Agar market kharab hai, toh bot signal skip karega taaki aapka loss na ho.\n"
-        "• <b>Accuracy Target:</b> 85%+"
+        "⚖️ <b>BALANCED ENGINE ACTIVATED</b>\n\n"
+        "• <b>Balanced Mode:</b> Sniper mode ke strict rules hata diye gaye hain.\n"
+        "• <b>Signal Rate:</b> Har 15 minute par 18 pairs mein se best signal milega."
     )
 
     while True:
@@ -355,7 +342,7 @@ def market_engine():
 
             if not chosen_setup:
                 now_ist = get_ist().strftime('%H:%M IST')
-                send_tg(f"⚠️ <b>SKIPPING CYCLE ({now_ist})</b>\n<i>Kharab market. Koi strong setup nahi mila. Capital safe hai.</i>")
+                send_tg(f"⚠️ <b>SKIPPING CYCLE ({now_ist})</b>\n<i>Market bilkul flat hai. Thoda wait karein.</i>")
                 continue
 
             pair_info = chosen_setup['pair']
@@ -374,7 +361,7 @@ def market_engine():
             ext_str = (now_ist + timedelta(minutes=15)).strftime("%H:%M:00 IST")
 
             alert = (
-                f"🎯 <b>QUOTEX STRICT SNIPER SIGNAL</b>\n\n"
+                f"🎯 <b>QUOTEX BALANCED SIGNAL</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
                 f"🚀 <b>Action:</b> <b>{action}</b>\n"
                 f"🔥 <b>Win Probability:</b> <b>{prob}%</b>\n"
