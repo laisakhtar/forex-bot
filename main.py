@@ -14,7 +14,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX 15M BALANCED ENGINE LIVE", 200
+    return "QUOTEX 15M NO-SKIP BINARY ENGINE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -165,49 +165,38 @@ def calculate_ema(prices, period):
         ema.append((price - ema[-1]) * multiplier + ema[-1])
     return ema
 
-# BALANCED LOGIC: Regular Signals with Safe Filtering
-def evaluate_quotex_confluence(candles):
+# 100% NO-SKIP PURE BINARY OPTIONS LOGIC
+def evaluate_quotex_binary(candles):
     if not candles or len(candles) < 20:
-        return "NO_TRADE", 0, "No Data"
+        return None, 0, "No Data"
 
     closes = [float(c['close']) for c in candles]
     opens = [float(c['open']) for c in candles]
-    highs = [float(c['high']) for c in candles]
-    lows = [float(c['low']) for c in candles]
     
-    # RSI (14)
-    gains, losses = [], []
-    for i in range(1, len(closes)):
-        delta = closes[i] - closes[i - 1]
-        gains.append(max(delta, 0.0))
-        losses.append(max(-delta, 0.0))
-    avg_gain = sum(gains[-14:]) / 14.0
-    avg_loss = sum(losses[-14:]) / 14.0
-    rsi = 100.0 if avg_loss == 0 else 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
-
-    ema3 = calculate_ema(closes, 3)[-1]
-    ema9 = calculate_ema(closes, 9)[-1]
+    ema5 = calculate_ema(closes, 5)[-1]
+    sma14 = sum(closes[-14:]) / 14.0
     
     last_close = closes[-1]
     last_open = opens[-1]
-    body = max(abs(last_close - last_open), 1e-6)
 
-    prob = 75 # Base setup probability
-    
-    # BALANCED TREND LOGIC
-    if ema3 > ema9 and last_close > last_open:
-        if rsi > 50: prob += 5
-        if rsi > 60: prob += 5
-        if body > (highs[-1] - lows[-1]) * 0.4: prob += 5 # Solid candle
-        return "CALL (UP) 🟢", prob, "Healthy Bullish Trend"
+    # Base Probability Score
+    prob = 70
 
-    if ema3 < ema9 and last_close < last_open:
-        if rsi < 50: prob += 5
-        if rsi < 40: prob += 5
-        if body > (highs[-1] - lows[-1]) * 0.4: prob += 5 # Solid candle
-        return "PUT (DOWN) 🔴", prob, "Healthy Bearish Trend"
+    # PURE BINARY MOMENTUM SCORING
+    if ema5 > sma14:
+        action = "CALL (UP) 🟢"
+        if last_close > last_open: prob += 10 # Last candle was green
+        if closes[-1] > closes[-2]: prob += 10 # Price is pushing higher
+        if opens[-1] > closes[-2]: prob += 5 # Gap up
+        reason = "Pure Bullish Momentum (EMA > SMA)"
+    else:
+        action = "PUT (DOWN) 🔴"
+        if last_close < last_open: prob += 10 # Last candle was red
+        if closes[-1] < closes[-2]: prob += 10 # Price is pushing lower
+        if opens[-1] < closes[-2]: prob += 5 # Gap down
+        reason = "Pure Bearish Momentum (EMA < SMA)"
 
-    return "NO_TRADE", 0, "Consolidation"
+    return action, min(prob, 96), reason
 
 def telegram_listener():
     offset = 0
@@ -227,9 +216,9 @@ def telegram_listener():
                             with state.state_lock:
                                 max_t = 4 if state.level <= 20 else 6
                                 reply = (
-                                    f"🟢 <b>QUOTEX BALANCED ENGINE ONLINE</b>\n\n"
+                                    f"🟢 <b>QUOTEX NO-SKIP ENGINE ONLINE</b>\n\n"
                                     f"🕒 <b>Clock:</b> <code>{get_ist().strftime('%H:%M:%S IST')}</code>\n"
-                                    f"📉 <b>Strategy:</b> Balanced Trend Predictor\n"
+                                    f"📉 <b>Strategy:</b> Pure Binary Momentum (1 Signal Guaranteed / 15m)\n"
                                     f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
                                     f"💵 <b>Current Stake:</b> ${LEVELS_STAKE[state.level]}"
                                 )
@@ -243,12 +232,11 @@ threading.Thread(target=telegram_listener, daemon=True).start()
 def analyze_pair(p):
     candles = fetch_15m_candles(p)
     if candles:
-        sig, prob, reason = evaluate_quotex_confluence(candles)
-        # BALANCED GATE: 75% aur usse upar wale setups allow honge
-        if sig != "NO_TRADE" and prob >= 75: 
+        action, prob, reason = evaluate_quotex_binary(candles)
+        if action:
             return {
                 "pair": p,
-                "action": sig,
+                "action": action,
                 "prob": prob,
                 "reason": reason,
                 "price": float(candles[-1]['close'])
@@ -258,9 +246,9 @@ def analyze_pair(p):
 def market_engine():
     time.sleep(2)
     send_tg(
-        "⚖️ <b>BALANCED ENGINE ACTIVATED</b>\n\n"
-        "• <b>Balanced Mode:</b> Sniper mode ke strict rules hata diye gaye hain.\n"
-        "• <b>Signal Rate:</b> Har 15 minute par 18 pairs mein se best signal milega."
+        "⚡ <b>NO-SKIP BINARY ENGINE ACTIVATED</b>\n\n"
+        "• <b>Guaranteed Signals:</b> Ab bot kabhi skip nahi karega.\n"
+        "• <b>Mechanism:</b> 18 pairs mein se sabse best momentum wala pair select hokar har 15 min par signal dega."
     )
 
     while True:
@@ -329,27 +317,29 @@ def market_engine():
                     send_tg("🟢 <b>60-MIN SESSION UNLOCKED: SCANNING RESUMED</b>")
                     continue
 
-            chosen_setup = None
-            best_prob = 0
+            # RANKING ALL PAIRS & GUARANTEEING A SIGNAL
+            best_setup = None
+            highest_prob = 0
             
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 results = list(executor.map(analyze_pair, PAIRS))
                 
             for res in results:
-                if res and res["prob"] > best_prob:
-                    best_prob = res["prob"]
-                    chosen_setup = res
+                if res and res["prob"] > highest_prob:
+                    highest_prob = res["prob"]
+                    best_setup = res
 
-            if not chosen_setup:
+            # Fallback if APIs are completely down (Extremely Rare)
+            if not best_setup:
                 now_ist = get_ist().strftime('%H:%M IST')
-                send_tg(f"⚠️ <b>SKIPPING CYCLE ({now_ist})</b>\n<i>Market bilkul flat hai. Thoda wait karein.</i>")
+                send_tg(f"⚠️ <b>API ERROR ({now_ist})</b>\n<i>Brokers ke data server down hain. Next cycle ka wait karein.</i>")
                 continue
 
-            pair_info = chosen_setup['pair']
-            cur_price = chosen_setup['price']
-            action = chosen_setup['action']
-            prob = chosen_setup['prob']
-            reason = chosen_setup['reason']
+            pair_info = best_setup['pair']
+            cur_price = best_setup['price']
+            action = best_setup['action']
+            prob = best_setup['prob']
+            reason = best_setup['reason']
             d = pair_info['digits']
 
             with state.state_lock:
@@ -361,7 +351,7 @@ def market_engine():
             ext_str = (now_ist + timedelta(minutes=15)).strftime("%H:%M:00 IST")
 
             alert = (
-                f"🎯 <b>QUOTEX BALANCED SIGNAL</b>\n\n"
+                f"🎯 <b>QUOTEX 15M BINARY SIGNAL</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
                 f"🚀 <b>Action:</b> <b>{action}</b>\n"
                 f"🔥 <b>Win Probability:</b> <b>{prob}%</b>\n"
@@ -391,4 +381,3 @@ threading.Thread(target=market_engine, daemon=True).start()
 if __name__ == "__main__":
     while True:
         time.sleep(60)
-    
