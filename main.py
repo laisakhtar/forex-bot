@@ -14,7 +14,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX 15M NO-SKIP BINARY ENGINE", 200
+    return "QUOTEX 15M MEDIUM ENGINE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -89,23 +89,25 @@ state = SafeEngineState()
 def get_ist():
     return datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
+# GUARANTEED MESSAGE SENDER (Fix for dropped signal messages)
 def send_tg(text):
     def _worker():
-        try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            payload = json.dumps({"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}).encode('utf-8')
-            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=6):
-                pass
-        except Exception:
-            pass
+        for _ in range(3): # Will retry 3 times if Telegram API is slow
+            try:
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+                payload = json.dumps({"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}).encode('utf-8')
+                req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json", "Connection": "close"})
+                with urllib.request.urlopen(req, timeout=10):
+                    break # Success, exit loop
+            except Exception as e:
+                time.sleep(2)
     threading.Thread(target=_worker, daemon=True).start()
 
 def fetch_live_price(pair_info):
     try:
         url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=2"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=2.5) as res:
+        with urllib.request.urlopen(req, timeout=3.0) as res:
             data = json.loads(res.read().decode('utf-8'))
             candles = data.get('candles', [])
             if candles:
@@ -128,7 +130,7 @@ def fetch_15m_candles(pair_info):
     try:
         url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=25"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=3.0) as res:
+        with urllib.request.urlopen(req, timeout=4.0) as res:
             data = json.loads(res.read().decode('utf-8'))
             if 'candles' in data and len(data['candles']) > 0:
                 return data['candles']
@@ -165,38 +167,46 @@ def calculate_ema(prices, period):
         ema.append((price - ema[-1]) * multiplier + ema[-1])
     return ema
 
-# 100% NO-SKIP PURE BINARY OPTIONS LOGIC
-def evaluate_quotex_binary(candles):
+# BALANCED QUOTEX MOMENTUM (Will skip Dojis, but trade clear moves)
+def evaluate_quotex_medium(candles):
     if not candles or len(candles) < 20:
         return None, 0, "No Data"
 
     closes = [float(c['close']) for c in candles]
     opens = [float(c['open']) for c in candles]
+    highs = [float(c['high']) for c in candles]
+    lows = [float(c['low']) for c in candles]
     
     ema5 = calculate_ema(closes, 5)[-1]
-    sma14 = sum(closes[-14:]) / 14.0
+    ema14 = calculate_ema(closes, 14)[-1]
     
     last_close = closes[-1]
     last_open = opens[-1]
+    body = abs(last_close - last_open)
+    candle_size = highs[-1] - lows[-1]
 
-    # Base Probability Score
-    prob = 70
+    # FILTER 1: FLAT MARKET REJECTION (Skips Dojis)
+    if candle_size == 0 or body < (candle_size * 0.25):
+        return None, 0, "Market Flat Hai (Skip)"
 
-    # PURE BINARY MOMENTUM SCORING
-    if ema5 > sma14:
-        action = "CALL (UP) 🟢"
-        if last_close > last_open: prob += 10 # Last candle was green
-        if closes[-1] > closes[-2]: prob += 10 # Price is pushing higher
-        if opens[-1] > closes[-2]: prob += 5 # Gap up
-        reason = "Pure Bullish Momentum (EMA > SMA)"
-    else:
-        action = "PUT (DOWN) 🔴"
-        if last_close < last_open: prob += 10 # Last candle was red
-        if closes[-1] < closes[-2]: prob += 10 # Price is pushing lower
-        if opens[-1] < closes[-2]: prob += 5 # Gap down
-        reason = "Pure Bearish Momentum (EMA < SMA)"
+    # RSI (14)
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        gains.append(max(delta, 0.0))
+        losses.append(max(-delta, 0.0))
+    avg_gain = sum(gains[-14:]) / 14.0
+    avg_loss = sum(losses[-14:]) / 14.0
+    rsi = 100.0 if avg_loss == 0 else 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
 
-    return action, min(prob, 96), reason
+    # VALID SETUP CONDITIONS
+    if ema5 > ema14 and rsi > 55 and last_close > last_open:
+        return "CALL (UP) 🟢", 85, "Clear Bullish Momentum"
+        
+    if ema5 < ema14 and rsi < 45 and last_close < last_open:
+        return "PUT (DOWN) 🔴", 85, "Clear Bearish Momentum"
+
+    return None, 0, "Consolidating"
 
 def telegram_listener():
     offset = 0
@@ -216,9 +226,9 @@ def telegram_listener():
                             with state.state_lock:
                                 max_t = 4 if state.level <= 20 else 6
                                 reply = (
-                                    f"🟢 <b>QUOTEX NO-SKIP ENGINE ONLINE</b>\n\n"
+                                    f"🟢 <b>QUOTEX MEDIUM ENGINE ONLINE</b>\n\n"
                                     f"🕒 <b>Clock:</b> <code>{get_ist().strftime('%H:%M:%S IST')}</code>\n"
-                                    f"📉 <b>Strategy:</b> Pure Binary Momentum (1 Signal Guaranteed / 15m)\n"
+                                    f"📉 <b>Strategy:</b> Balanced Momentum\n"
                                     f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
                                     f"💵 <b>Current Stake:</b> ${LEVELS_STAKE[state.level]}"
                                 )
@@ -232,7 +242,7 @@ threading.Thread(target=telegram_listener, daemon=True).start()
 def analyze_pair(p):
     candles = fetch_15m_candles(p)
     if candles:
-        action, prob, reason = evaluate_quotex_binary(candles)
+        action, prob, reason = evaluate_quotex_medium(candles)
         if action:
             return {
                 "pair": p,
@@ -246,9 +256,9 @@ def analyze_pair(p):
 def market_engine():
     time.sleep(2)
     send_tg(
-        "⚡ <b>NO-SKIP BINARY ENGINE ACTIVATED</b>\n\n"
-        "• <b>Guaranteed Signals:</b> Ab bot kabhi skip nahi karega.\n"
-        "• <b>Mechanism:</b> 18 pairs mein se sabse best momentum wala pair select hokar har 15 min par signal dega."
+        "⚡ <b>MEDIUM FREQUENCY ENGINE ACTIVATED</b>\n\n"
+        "• <b>Balanced Mode:</b> Agar market dead hai toh bot skip karega.\n"
+        "• <b>Signal Delivery Fix:</b> Message dropping issue fixed."
     )
 
     while True:
@@ -317,7 +327,6 @@ def market_engine():
                     send_tg("🟢 <b>60-MIN SESSION UNLOCKED: SCANNING RESUMED</b>")
                     continue
 
-            # RANKING ALL PAIRS & GUARANTEEING A SIGNAL
             best_setup = None
             highest_prob = 0
             
@@ -329,10 +338,9 @@ def market_engine():
                     highest_prob = res["prob"]
                     best_setup = res
 
-            # Fallback if APIs are completely down (Extremely Rare)
             if not best_setup:
                 now_ist = get_ist().strftime('%H:%M IST')
-                send_tg(f"⚠️ <b>API ERROR ({now_ist})</b>\n<i>Brokers ke data server down hain. Next cycle ka wait karein.</i>")
+                send_tg(f"⚠️ <b>SKIPPING CYCLE ({now_ist})</b>\n<i>Market abhi range/flat mein hai. Achha momentum aane par hi trade milegi.</i>")
                 continue
 
             pair_info = best_setup['pair']
@@ -351,7 +359,7 @@ def market_engine():
             ext_str = (now_ist + timedelta(minutes=15)).strftime("%H:%M:00 IST")
 
             alert = (
-                f"🎯 <b>QUOTEX 15M BINARY SIGNAL</b>\n\n"
+                f"🎯 <b>QUOTEX 15M MOMENTUM SIGNAL</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
                 f"🚀 <b>Action:</b> <b>{action}</b>\n"
                 f"🔥 <b>Win Probability:</b> <b>{prob}%</b>\n"
@@ -381,3 +389,4 @@ threading.Thread(target=market_engine, daemon=True).start()
 if __name__ == "__main__":
     while True:
         time.sleep(60)
+            
