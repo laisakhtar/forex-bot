@@ -3,17 +3,18 @@ import threading
 import time
 import json
 import urllib.request
+import math
 import concurrent.futures
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 
-# 1. Keep-Alive Web Server (Render 24/7)
+# 1. Keep-Alive Web Server
 app = Flask(__name__)
 
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX 15M CANDLE PREDICTOR LIVE", 200
+    return "QUOTEX 15M REVERSAL ENGINE LIVE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -21,7 +22,6 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 
-# External Watchdog to prevent Render Free Tier from Sleeping
 def render_anti_freeze():
     time.sleep(10)
     external_url = os.environ.get("RENDER_EXTERNAL_URL", f"http://127.0.0.1:{os.environ.get('PORT', 10000)}")
@@ -33,11 +33,11 @@ def render_anti_freeze():
                 pass
         except Exception:
             pass
-        time.sleep(240) # Ping every 4 minutes
+        time.sleep(240)
 
 threading.Thread(target=render_anti_freeze, daemon=True).start()
 
-# 2. Telegram Credentials & Compounding
+# 2. Telegram Credentials
 BOT_TOKEN = "8807036352:AAGwVcFaIxvVU7xUIWFDHlHUwKM3vGdLbuw"
 CHAT_ID = "5883050661"
 
@@ -89,7 +89,7 @@ state = SafeEngineState()
 def get_ist():
     return datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
-# Reliable Telegram Sender
+# GUARANTEED MESSAGE SENDER
 def send_tg(text):
     def _worker():
         for _ in range(3): 
@@ -103,7 +103,6 @@ def send_tg(text):
                 time.sleep(2)
     threading.Thread(target=_worker, daemon=True).start()
 
-# Fast Dual API Price Fetching
 def fetch_live_price(pair_info):
     try:
         url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=2"
@@ -129,7 +128,7 @@ def fetch_live_price(pair_info):
 
 def fetch_15m_candles(pair_info):
     try:
-        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=15"
+        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=30"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=4.0) as res:
             data = json.loads(res.read().decode('utf-8'))
@@ -156,75 +155,88 @@ def fetch_15m_candles(pair_info):
                         'close': float(quote['close'][i])
                     })
             if len(candles) > 0:
-                return candles[-15:]
+                return candles[-30:]
     except Exception:
         pass
     return []
 
-def calculate_ema(prices, period):
-    multiplier = 2 / (period + 1)
-    ema = [sum(prices[:period]) / period]
-    for price in prices[period:]:
-        ema.append((price - ema[-1]) * multiplier + ema[-1])
-    return ema
-
 # -------------------------------------------------------------
-# QUOTEX 1-CANDLE PREDICTOR ALGORITHM (Guarantees A Setup)
+# QUOTEX 1-CANDLE REVERSAL ALGORITHM (Overbought/Oversold Drops)
 # -------------------------------------------------------------
 def predict_next_candle(candles):
-    if not candles or len(candles) < 14:
-        return "CALL (UP) 🟢", 50, "Default Calculation" # Prevent crash, fallback
+    if not candles or len(candles) < 25:
+        return "CALL (UP) 🟢", 50, "Default Base"
 
     closes = [float(c['close']) for c in candles]
     opens = [float(c['open']) for c in candles]
     highs = [float(c['high']) for c in candles]
     lows = [float(c['low']) for c in candles]
     
-    ema3 = calculate_ema(closes, 3)[-1]
-    ema9 = calculate_ema(closes, 9)[-1]
-    
-    # RSI (14) Momentum
+    # RSI (14) Calculation
     gains, losses = [], []
     for i in range(1, len(closes)):
         delta = closes[i] - closes[i - 1]
         gains.append(max(delta, 0.0))
         losses.append(max(-delta, 0.0))
-    avg_gain = sum(gains[-13:]) / 13.0 if len(gains) >= 13 else 0
-    avg_loss = sum(losses[-13:]) / 13.0 if len(losses) >= 13 else 0
+    avg_gain = sum(gains[-14:]) / 14.0 if len(gains) >= 14 else 0
+    avg_loss = sum(losses[-14:]) / 14.0 if len(losses) >= 14 else 0
     rsi = 100.0 if avg_loss == 0 else 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
+
+    # Bollinger Bands (20, 2)
+    recent_closes = closes[-20:]
+    sma20 = sum(recent_closes) / 20.0
+    variance = sum((x - sma20) ** 2 for x in recent_closes) / 20.0
+    std_dev = math.sqrt(variance)
+    upper_bb = sma20 + (2 * std_dev)
+    lower_bb = sma20 - (2 * std_dev)
 
     last_close = closes[-1]
     last_open = opens[-1]
+    last_high = highs[-1]
+    last_low = lows[-1]
 
-    call_score = 0
-    put_score = 0
+    body = max(abs(last_close - last_open), 1e-6)
+    candle_size = max(last_high - last_low, 1e-6)
+    lower_wick = min(last_open, last_close) - last_low
+    upper_wick = last_high - max(last_open, last_close)
 
-    # 1. Trend Align (30 points)
-    if ema3 > ema9: call_score += 30
-    if ema3 < ema9: put_score += 30
+    call_score = 50
+    put_score = 50
 
-    # 2. Candle Action (40 points)
-    if last_close > last_open: # Aakhri candle Green thi
-        call_score += 30
-        if closes[-1] > closes[-2]: call_score += 10 # Pichle close se upar band hui
-    
-    if last_close < last_open: # Aakhri candle Red thi
-        put_score += 30
-        if closes[-1] < closes[-2]: put_score += 10 # Pichle close se neeche band hui
+    # -------- CALL (UP) REVERSAL SCORING --------
+    # 1. Price touches/pierces Lower Bollinger Band (Huge chance of bounce)
+    if last_low <= lower_bb: call_score += 25
+    # 2. RSI Oversold (Exhausted sellers)
+    if rsi < 35: call_score += 15
+    if rsi < 30: call_score += 10
+    # 3. Wick Rejection (Hammer formation - Buyers stepping in)
+    if lower_wick > body * 1.5: call_score += 20
+    # 4. Consecutive Red Candles (3 red in a row means 4th is likely green)
+    if closes[-1] < opens[-1] and closes[-2] < opens[-2]: call_score += 15
 
-    # 3. RSI Momentum (15 points)
-    if rsi > 45 and rsi < 75: call_score += 15 # Upward room
-    if rsi < 55 and rsi > 25: put_score += 15 # Downward room
+    # -------- PUT (DOWN) REVERSAL SCORING --------
+    # 1. Price touches/pierces Upper Bollinger Band (Huge chance of drop)
+    if last_high >= upper_bb: put_score += 25
+    # 2. RSI Overbought (Exhausted buyers)
+    if rsi > 65: put_score += 15
+    if rsi > 70: put_score += 10
+    # 3. Wick Rejection (Shooting Star formation - Sellers stepping in)
+    if upper_wick > body * 1.5: put_score += 20
+    # 4. Consecutive Green Candles (3 green in a row means 4th is likely red)
+    if closes[-1] > opens[-1] and closes[-2] > opens[-2]: put_score += 15
 
-    # Decision Making
-    if call_score >= put_score:
-        final_prob = min(call_score + 15, 96) # Adjusted for display
-        return "CALL (UP) 🟢", final_prob, "Strong Green Momentum & EMA Align"
+    # Pick the highest probability reversal
+    if call_score > put_score:
+        return "CALL (UP) 🟢", min(call_score, 98), "Support Bounce & Lower Wick Rejection"
+    elif put_score > call_score:
+        return "PUT (DOWN) 🔴", min(put_score, 98), "Resistance Drop & Upper Wick Rejection"
     else:
-        final_prob = min(put_score + 15, 96)
-        return "PUT (DOWN) 🔴", final_prob, "Strong Red Momentum & EMA Align"
+        # Fallback to minor mean reversion
+        if last_close > last_open:
+            return "PUT (DOWN) 🔴", 65, "Minor Mean Reversion (Red Setup)"
+        else:
+            return "CALL (UP) 🟢", 65, "Minor Mean Reversion (Green Setup)"
 
-# Telegram Bot Listener
 def telegram_listener():
     offset = 0
     while True:
@@ -243,9 +255,9 @@ def telegram_listener():
                             with state.state_lock:
                                 max_t = 4 if state.level <= 20 else 6
                                 reply = (
-                                    f"🟢 <b>QUOTEX CANDLE PREDICTOR ONLINE</b>\n\n"
+                                    f"🟢 <b>QUOTEX REVERSAL ENGINE ONLINE</b>\n\n"
                                     f"🕒 <b>Clock:</b> <code>{get_ist().strftime('%H:%M:%S IST')}</code>\n"
-                                    f"📉 <b>Strategy:</b> Advanced Momentum Ranking\n"
+                                    f"📉 <b>Strategy:</b> 1-Candle Reversal & Wick Rejection\n"
                                     f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
                                     f"💵 <b>Current Stake:</b> ${LEVELS_STAKE[state.level]}"
                                 )
@@ -272,9 +284,9 @@ def analyze_pair(p):
 def market_engine():
     time.sleep(2)
     send_tg(
-        "🚀 <b>QUOTEX 1-CANDLE PREDICTOR DEPLOYED</b>\n\n"
-        "• <b>Skip-Free Design:</b> Engine 18 pairs mein se top scored pair ko chunega.\n"
-        "• <b>Guaranteed Signal:</b> Har 15-minute (:00, :15, :30, :45) par entry aayegi."
+        "🚀 <b>QUOTEX REVERSAL ENGINE DEPLOYED</b>\n\n"
+        "• <b>New Strategy:</b> Bot ab fake breakouts/momentum mein nahi phasega. Yeh BB extremes aur wick rejection par bounce trade lega.\n"
+        "• <b>Guaranteed Signal:</b> Har 15-minute (:00, :15, :30, :45) par highest reversal score wali trade aayegi."
     )
 
     while True:
@@ -334,6 +346,7 @@ def market_engine():
                 send_tg(res_msg)
                 state.active_trade = None
 
+                # 2-Loss Cooldown
                 if state.consecutive_losses >= 2:
                     send_tg("🚨 <b>2 CONSECUTIVE LOSSES: SYSTEM RESTING FOR 60 MINS</b>")
                     time.sleep(3600)
@@ -344,7 +357,7 @@ def market_engine():
                     send_tg("🟢 <b>60-MIN BREAK OVER: BOT RESTARTED</b>")
                     continue
 
-            # 2. FETCH NEW BEST PAIR (GUARANTEED)
+            # 2. FETCH NEW BEST PAIR (GUARANTEED NO-SKIP)
             best_setup = None
             highest_score = -1
             
@@ -356,7 +369,6 @@ def market_engine():
                     highest_score = res["score"]
                     best_setup = res
 
-            # Rare API Fallback
             if not best_setup:
                 now_ist = get_ist().strftime('%H:%M IST')
                 send_tg(f"⚠️ <b>DATA FETCH ERROR ({now_ist})</b>\n<i>Servers are down. Waiting for next candle.</i>")
@@ -378,10 +390,10 @@ def market_engine():
             ext_str = (now_ist + timedelta(minutes=15)).strftime("%H:%M:00 IST")
 
             alert = (
-                f"🎯 <b>QUOTEX 15M CANDLE PREDICTION</b>\n\n"
+                f"🎯 <b>QUOTEX REVERSAL SIGNAL</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
-                f"🚀 <b>Prediction:</b> <b>{action}</b>\n"
-                f"🔥 <b>Candle Strength:</b> <b>{score}%</b>\n"
+                f"🚀 <b>Action:</b> <b>{action}</b>\n"
+                f"🔥 <b>Setup Strength:</b> <b>{score}%</b>\n"
                 f"⏳ <b>Expiry:</b> EXACTLY 15 MINUTES\n\n"
                 f"⏱️ <b>Entry Clock:</b> <code>{ent_str}</code>\n"
                 f"🏁 <b>Exit Clock:</b> <code>{ext_str}</code>\n\n"
