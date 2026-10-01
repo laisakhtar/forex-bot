@@ -3,7 +3,6 @@ import threading
 import time
 import json
 import urllib.request
-import math
 import concurrent.futures
 from datetime import datetime, timezone, timedelta
 from flask import Flask
@@ -14,7 +13,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX 15M REVERSAL ENGINE LIVE", 200
+    return "QUOTEX 15M PRICE ACTION ENGINE LIVE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -89,7 +88,6 @@ state = SafeEngineState()
 def get_ist():
     return datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
-# GUARANTEED MESSAGE SENDER
 def send_tg(text):
     def _worker():
         for _ in range(3): 
@@ -128,7 +126,7 @@ def fetch_live_price(pair_info):
 
 def fetch_15m_candles(pair_info):
     try:
-        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=30"
+        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=50"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=4.0) as res:
             data = json.loads(res.read().decode('utf-8'))
@@ -138,7 +136,7 @@ def fetch_15m_candles(pair_info):
         pass
 
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=15m&range=2d"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=15m&range=5d"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=4.0) as res:
             data = json.loads(res.read().decode('utf-8'))
@@ -155,87 +153,97 @@ def fetch_15m_candles(pair_info):
                         'close': float(quote['close'][i])
                     })
             if len(candles) > 0:
-                return candles[-30:]
+                return candles[-50:]
     except Exception:
         pass
     return []
 
+def calculate_ema(prices, period):
+    multiplier = 2 / (period + 1)
+    ema = [sum(prices[:period]) / period]
+    for price in prices[period:]:
+        ema.append((price - ema[-1]) * multiplier + ema[-1])
+    return ema
+
 # -------------------------------------------------------------
-# QUOTEX 1-CANDLE REVERSAL ALGORITHM (Overbought/Oversold Drops)
+# PURE PRICE ACTION ALGORITHM (Candlestick Patterns + Trend)
 # -------------------------------------------------------------
-def predict_next_candle(candles):
-    if not candles or len(candles) < 25:
-        return "CALL (UP) 🟢", 50, "Default Base"
+def predict_price_action(candles):
+    if not candles or len(candles) < 40:
+        return None, 0, "No Data"
 
     closes = [float(c['close']) for c in candles]
     opens = [float(c['open']) for c in candles]
     highs = [float(c['high']) for c in candles]
     lows = [float(c['low']) for c in candles]
     
-    # RSI (14) Calculation
-    gains, losses = [], []
-    for i in range(1, len(closes)):
-        delta = closes[i] - closes[i - 1]
-        gains.append(max(delta, 0.0))
-        losses.append(max(-delta, 0.0))
-    avg_gain = sum(gains[-14:]) / 14.0 if len(gains) >= 14 else 0
-    avg_loss = sum(losses[-14:]) / 14.0 if len(losses) >= 14 else 0
-    rsi = 100.0 if avg_loss == 0 else 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
+    # Check Big Trend (EMA 20)
+    ema20 = calculate_ema(closes, 20)[-1]
+    
+    # Last two candles
+    c1_open, c1_close, c1_high, c1_low = opens[-1], closes[-1], highs[-1], lows[-1]
+    c2_open, c2_close = opens[-2], closes[-2]
 
-    # Bollinger Bands (20, 2)
-    recent_closes = closes[-20:]
-    sma20 = sum(recent_closes) / 20.0
-    variance = sum((x - sma20) ** 2 for x in recent_closes) / 20.0
-    std_dev = math.sqrt(variance)
-    upper_bb = sma20 + (2 * std_dev)
-    lower_bb = sma20 - (2 * std_dev)
+    # Basics
+    c1_green = c1_close > c1_open
+    c1_red = c1_close < c1_open
+    c2_green = c2_close > c2_open
+    c2_red = c2_close < c2_open
+    
+    c1_body = abs(c1_close - c1_open)
+    c1_upper_wick = c1_high - max(c1_open, c1_close)
+    c1_lower_wick = min(c1_open, c1_close) - c1_low
+    
+    call_score = 0
+    put_score = 0
+    reason_call = ""
+    reason_put = ""
 
-    last_close = closes[-1]
-    last_open = opens[-1]
-    last_high = highs[-1]
-    last_low = lows[-1]
+    # --- CALL (UP) CONDITIONS ---
+    if c1_close > ema20: call_score += 20 # Align with Trend
+    
+    # Bullish Engulfing
+    if c2_red and c1_green and c1_close > c2_open and c1_open <= c2_close:
+        call_score += 40
+        reason_call = "Bullish Engulfing Pattern"
+    
+    # Hammer / Pinbar Rejection
+    if c1_lower_wick > (c1_body * 2) and c1_upper_wick < c1_body:
+        call_score += 30
+        reason_call = "Strong Hammer Rejection"
 
-    body = max(abs(last_close - last_open), 1e-6)
-    candle_size = max(last_high - last_low, 1e-6)
-    lower_wick = min(last_open, last_close) - last_low
-    upper_wick = last_high - max(last_open, last_close)
+    # Momentum
+    if c1_green and c1_close > max(highs[-4:-1]):
+        call_score += 20
+        reason_call = "New High Breakout"
 
-    call_score = 50
-    put_score = 50
+    # --- PUT (DOWN) CONDITIONS ---
+    if c1_close < ema20: put_score += 20 # Align with Trend
+    
+    # Bearish Engulfing
+    if c2_green and c1_red and c1_close < c2_open and c1_open >= c2_close:
+        put_score += 40
+        reason_put = "Bearish Engulfing Pattern"
+        
+    # Shooting Star / Pinbar Rejection
+    if c1_upper_wick > (c1_body * 2) and c1_lower_wick < c1_body:
+        put_score += 30
+        reason_put = "Shooting Star Rejection"
 
-    # -------- CALL (UP) REVERSAL SCORING --------
-    # 1. Price touches/pierces Lower Bollinger Band (Huge chance of bounce)
-    if last_low <= lower_bb: call_score += 25
-    # 2. RSI Oversold (Exhausted sellers)
-    if rsi < 35: call_score += 15
-    if rsi < 30: call_score += 10
-    # 3. Wick Rejection (Hammer formation - Buyers stepping in)
-    if lower_wick > body * 1.5: call_score += 20
-    # 4. Consecutive Red Candles (3 red in a row means 4th is likely green)
-    if closes[-1] < opens[-1] and closes[-2] < opens[-2]: call_score += 15
+    # Momentum
+    if c1_red and c1_close < min(lows[-4:-1]):
+        put_score += 20
+        reason_put = "New Low Breakdown"
 
-    # -------- PUT (DOWN) REVERSAL SCORING --------
-    # 1. Price touches/pierces Upper Bollinger Band (Huge chance of drop)
-    if last_high >= upper_bb: put_score += 25
-    # 2. RSI Overbought (Exhausted buyers)
-    if rsi > 65: put_score += 15
-    if rsi > 70: put_score += 10
-    # 3. Wick Rejection (Shooting Star formation - Sellers stepping in)
-    if upper_wick > body * 1.5: put_score += 20
-    # 4. Consecutive Green Candles (3 green in a row means 4th is likely red)
-    if closes[-1] > opens[-1] and closes[-2] > opens[-2]: put_score += 15
+    if call_score == 0 and put_score == 0:
+        # Fallback to basic momentum so it never skips
+        if c1_green: return "CALL (UP) 🟢", 60, "Basic Bullish Pressure"
+        else: return "PUT (DOWN) 🔴", 60, "Basic Bearish Pressure"
 
-    # Pick the highest probability reversal
-    if call_score > put_score:
-        return "CALL (UP) 🟢", min(call_score, 98), "Support Bounce & Lower Wick Rejection"
-    elif put_score > call_score:
-        return "PUT (DOWN) 🔴", min(put_score, 98), "Resistance Drop & Upper Wick Rejection"
+    if call_score >= put_score:
+        return "CALL (UP) 🟢", min(call_score + 15, 96), reason_call if reason_call else "Bullish Trend Support"
     else:
-        # Fallback to minor mean reversion
-        if last_close > last_open:
-            return "PUT (DOWN) 🔴", 65, "Minor Mean Reversion (Red Setup)"
-        else:
-            return "CALL (UP) 🟢", 65, "Minor Mean Reversion (Green Setup)"
+        return "PUT (DOWN) 🔴", min(put_score + 15, 96), reason_put if reason_put else "Bearish Trend Resistance"
 
 def telegram_listener():
     offset = 0
@@ -255,9 +263,9 @@ def telegram_listener():
                             with state.state_lock:
                                 max_t = 4 if state.level <= 20 else 6
                                 reply = (
-                                    f"🟢 <b>QUOTEX REVERSAL ENGINE ONLINE</b>\n\n"
+                                    f"🟢 <b>PRICE ACTION ENGINE ONLINE</b>\n\n"
                                     f"🕒 <b>Clock:</b> <code>{get_ist().strftime('%H:%M:%S IST')}</code>\n"
-                                    f"📉 <b>Strategy:</b> 1-Candle Reversal & Wick Rejection\n"
+                                    f"📉 <b>Strategy:</b> Candlestick Patterns + Trend\n"
                                     f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
                                     f"💵 <b>Current Stake:</b> ${LEVELS_STAKE[state.level]}"
                                 )
@@ -271,22 +279,23 @@ threading.Thread(target=telegram_listener, daemon=True).start()
 def analyze_pair(p):
     candles = fetch_15m_candles(p)
     if candles:
-        action, score, reason = predict_next_candle(candles)
-        return {
-            "pair": p,
-            "action": action,
-            "score": score,
-            "reason": reason,
-            "price": float(candles[-1]['close'])
-        }
+        action, score, reason = predict_price_action(candles)
+        if action:
+            return {
+                "pair": p,
+                "action": action,
+                "score": score,
+                "reason": reason,
+                "price": float(candles[-1]['close'])
+            }
     return None
 
 def market_engine():
     time.sleep(2)
     send_tg(
-        "🚀 <b>QUOTEX REVERSAL ENGINE DEPLOYED</b>\n\n"
-        "• <b>New Strategy:</b> Bot ab fake breakouts/momentum mein nahi phasega. Yeh BB extremes aur wick rejection par bounce trade lega.\n"
-        "• <b>Guaranteed Signal:</b> Har 15-minute (:00, :15, :30, :45) par highest reversal score wali trade aayegi."
+        "🚀 <b>PRICE ACTION ENGINE DEPLOYED</b>\n\n"
+        "• <b>Real Trading Logic:</b> Indicators hata diye gaye hain. Ab bot asli traders ki tarah Candlestick patterns (Engulfing, Hammer) aur Trend par trade karega.\n"
+        "• <b>Guaranteed Signal:</b> Har 15 minute par 18 pairs mein se top scored pair ko select karke signal dega."
     )
 
     while True:
@@ -346,7 +355,6 @@ def market_engine():
                 send_tg(res_msg)
                 state.active_trade = None
 
-                # 2-Loss Cooldown
                 if state.consecutive_losses >= 2:
                     send_tg("🚨 <b>2 CONSECUTIVE LOSSES: SYSTEM RESTING FOR 60 MINS</b>")
                     time.sleep(3600)
@@ -390,7 +398,7 @@ def market_engine():
             ext_str = (now_ist + timedelta(minutes=15)).strftime("%H:%M:00 IST")
 
             alert = (
-                f"🎯 <b>QUOTEX REVERSAL SIGNAL</b>\n\n"
+                f"🎯 <b>QUOTEX PRICE ACTION SIGNAL</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
                 f"🚀 <b>Action:</b> <b>{action}</b>\n"
                 f"🔥 <b>Setup Strength:</b> <b>{score}%</b>\n"
@@ -420,4 +428,3 @@ threading.Thread(target=market_engine, daemon=True).start()
 if __name__ == "__main__":
     while True:
         time.sleep(60)
-            
