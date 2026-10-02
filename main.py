@@ -13,7 +13,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX 15M MICRO-TREND ENGINE", 200
+    return "QUOTEX 15M S&R REVERSAL ENGINE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -158,66 +158,49 @@ def fetch_15m_candles(pair_info):
         pass
     return []
 
-def calculate_ema(prices, period):
-    multiplier = 2 / (period + 1)
-    ema = [sum(prices[:period]) / period]
-    for price in prices[period:]:
-        ema.append((price - ema[-1]) * multiplier + ema[-1])
-    return ema
-
 # -------------------------------------------------------------
-# MICRO-TREND RIDER LOGIC (Zero Skips, Protects against Pullbacks)
+# SUPPORT & RESISTANCE REVERSAL ENGINE (Anti-Pullback Trap)
 # -------------------------------------------------------------
-def predict_trend_rider(candles):
+def predict_snr_reversal(candles):
     if not candles or len(candles) < 20:
         return None, 0, "No Data"
 
     closes = [float(c['close']) for c in candles]
-    opens = [float(c['open']) for c in candles]
     highs = [float(c['high']) for c in candles]
     lows = [float(c['low']) for c in candles]
+    opens = [float(c['open']) for c in candles]
     
-    ema5 = calculate_ema(closes, 5)[-1]
-    ema20 = calculate_ema(closes, 20)[-1]
+    # Calculate 20-candle Support (Low) and Resistance (High)
+    recent_high = max(highs[-20:])
+    recent_low = min(lows[-20:])
+    current_price = closes[-1]
     
-    last_close, last_open = closes[-1], opens[-1]
-    prev_close, prev_open = closes[-2], opens[-2]
-    
-    body = max(abs(last_close - last_open), 1e-6)
-    upper_wick = highs[-1] - max(last_close, last_open)
-    lower_wick = min(last_close, last_open) - lows[-1]
+    if recent_high == recent_low:
+        return None, 0, "Flat Market"
 
-    score = 50
-    reason = "Momentum Following"
-    
-    # Check if last candle was Green or Red
-    if last_close > last_open:
-        action = "CALL (UP) 🟢"
-        if ema5 > ema20: score += 20 # Overall Trend is UP
-        if last_close > prev_close: score += 15 # Price making higher highs
-        if opens[-1] >= prev_close: score += 10 # No Gap Down
-        
-        # Pullback Protection: If upper wick is huge, sellers are rejecting it!
-        if upper_wick > body: 
-            score -= 30 
-            reason = "Weak Green (Rejection at Top)"
-        else:
-            reason = "Strong Bullish Continuation"
-            
+    # Position in range (0.0 means exactly at Support, 1.0 means exactly at Resistance)
+    position = (current_price - recent_low) / (recent_high - recent_low)
+
+    # Base Scores based on proximity to extreme levels
+    call_score = (1.0 - position) * 100  # High score if near support
+    put_score = position * 100           # High score if near resistance
+
+    # Candlestick Rejection (Wick Analysis)
+    last_open = opens[-1]
+    body = abs(current_price - last_open)
+    upper_wick = highs[-1] - max(current_price, last_open)
+    lower_wick = min(current_price, last_open) - lows[-1]
+
+    # Add heavy bonus if wicks show rejection at these extreme levels
+    if lower_wick > body: call_score += 20
+    if upper_wick > body: put_score += 20
+
+    if call_score >= put_score:
+        final_score = min(call_score, 98)
+        return "CALL (UP) 🟢", final_score, "Support Level Bounce Rejection"
     else:
-        action = "PUT (DOWN) 🔴"
-        if ema5 < ema20: score += 20 # Overall Trend is DOWN
-        if last_close < prev_close: score += 15 # Price making lower lows
-        if opens[-1] <= prev_close: score += 10 # No Gap Up
-        
-        # Pullback Protection: If lower wick is huge, buyers are rejecting it!
-        if lower_wick > body: 
-            score -= 30 
-            reason = "Weak Red (Rejection at Bottom)"
-        else:
-            reason = "Strong Bearish Continuation"
-
-    return action, min(score, 98), reason
+        final_score = min(put_score, 98)
+        return "PUT (DOWN) 🔴", final_score, "Resistance Level Drop Rejection"
 
 def telegram_listener():
     offset = 0
@@ -237,9 +220,9 @@ def telegram_listener():
                             with state.state_lock:
                                 max_t = 4 if state.level <= 20 else 6
                                 reply = (
-                                    f"🟢 <b>QUOTEX MICRO-TREND ENGINE ONLINE</b>\n\n"
+                                    f"🟢 <b>QUOTEX S&R REVERSAL ENGINE ONLINE</b>\n\n"
                                     f"🕒 <b>Clock:</b> <code>{get_ist().strftime('%H:%M:%S IST')}</code>\n"
-                                    f"📉 <b>Strategy:</b> Pullback Protected Momentum\n"
+                                    f"📉 <b>Strategy:</b> Support/Resistance Extremes\n"
                                     f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
                                     f"💵 <b>Current Stake:</b> ${LEVELS_STAKE[state.level]}"
                                 )
@@ -253,7 +236,7 @@ threading.Thread(target=telegram_listener, daemon=True).start()
 def analyze_pair(p):
     candles = fetch_15m_candles(p)
     if candles:
-        action, score, reason = predict_trend_rider(candles)
+        action, score, reason = predict_snr_reversal(candles)
         if action:
             return {
                 "pair": p,
@@ -267,9 +250,9 @@ def analyze_pair(p):
 def market_engine():
     time.sleep(2)
     send_tg(
-        "🚀 <b>MICRO-TREND ENGINE DEPLOYED</b>\n\n"
-        "• <b>Pullback Protection:</b> Bot ab un candles ko detect karke 'Minus Score' dega jo dhoka de sakti hain.\n"
-        "• <b>Guaranteed Signal:</b> 18 pairs mein se har baar sabse strong candle wala signal aayega."
+        "🚀 <b>S&R REVERSAL ENGINE DEPLOYED</b>\n\n"
+        "• <b>Pullback Trap Fixed:</b> Bot ab trend ke beech mein trade nahi karega. Yeh top resistance ya bottom support par trade pakdega.\n"
+        "• <b>Guaranteed Delivery:</b> Har 15 minute par 18 pairs mein se extreme setup wala signal aayega."
     )
 
     while True:
@@ -293,7 +276,7 @@ def market_engine():
                     max_t = 4 if state.level <= 20 else 6
                     if exit_price and entry_price:
                         if "CALL" in action:
-                            is_win = (exit_price >= entry_price) # Tie/Doji ko bhi win consider karega demo ke liye
+                            is_win = (exit_price >= entry_price) 
                         else:
                             is_win = (exit_price <= entry_price)
                     else:
@@ -341,7 +324,7 @@ def market_engine():
 
             # 2. FETCH NEW BEST PAIR (GUARANTEED NO-SKIP)
             best_setup = None
-            highest_score = -100 # Allow negative scores to be overridden
+            highest_score = -100 
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 results = list(executor.map(analyze_pair, PAIRS))
@@ -372,10 +355,10 @@ def market_engine():
             ext_str = (now_ist + timedelta(minutes=15)).strftime("%H:%M:00 IST")
 
             alert = (
-                f"🎯 <b>QUOTEX MICRO-TREND SIGNAL</b>\n\n"
+                f"🎯 <b>QUOTEX S&R EXTREME SIGNAL</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
                 f"🚀 <b>Prediction:</b> <b>{action}</b>\n"
-                f"🔥 <b>Momentum Score:</b> <b>{score}%</b>\n"
+                f"🔥 <b>Reversal Strength:</b> <b>{score:.1f}%</b>\n"
                 f"⏳ <b>Expiry:</b> EXACTLY 15 MINUTES\n\n"
                 f"⏱️ <b>Entry Clock:</b> <code>{ent_str}</code>\n"
                 f"🏁 <b>Exit Clock:</b> <code>{ext_str}</code>\n\n"
@@ -402,4 +385,4 @@ threading.Thread(target=market_engine, daemon=True).start()
 if __name__ == "__main__":
     while True:
         time.sleep(60)
-                                        
+    
