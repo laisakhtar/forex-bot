@@ -13,7 +13,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX 15M S&R REVERSAL ENGINE", 200
+    return "QUOTEX 15M MARUBOZU ENGINE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -126,7 +126,7 @@ def fetch_live_price(pair_info):
 
 def fetch_15m_candles(pair_info):
     try:
-        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=25"
+        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=5"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=4.0) as res:
             data = json.loads(res.read().decode('utf-8'))
@@ -136,7 +136,7 @@ def fetch_15m_candles(pair_info):
         pass
 
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=15m&range=2d"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=15m&range=1d"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=4.0) as res:
             data = json.loads(res.read().decode('utf-8'))
@@ -153,54 +153,58 @@ def fetch_15m_candles(pair_info):
                         'close': float(quote['close'][i])
                     })
             if len(candles) > 0:
-                return candles[-25:]
+                return candles[-5:]
     except Exception:
         pass
     return []
 
 # -------------------------------------------------------------
-# SUPPORT & RESISTANCE REVERSAL ENGINE (Anti-Pullback Trap)
+# THE MARUBOZU MOMENTUM ENGINE (Solid Body, No Wick Trap)
 # -------------------------------------------------------------
-def predict_snr_reversal(candles):
-    if not candles or len(candles) < 20:
+def predict_marubozu(candles):
+    if not candles or len(candles) < 2:
         return None, 0, "No Data"
 
-    closes = [float(c['close']) for c in candles]
-    highs = [float(c['high']) for c in candles]
-    lows = [float(c['low']) for c in candles]
-    opens = [float(c['open']) for c in candles]
-    
-    # Calculate 20-candle Support (Low) and Resistance (High)
-    recent_high = max(highs[-20:])
-    recent_low = min(lows[-20:])
-    current_price = closes[-1]
-    
-    if recent_high == recent_low:
+    c = candles[-1] # Aakhri (Current) Candle
+    c_open, c_close, c_high, c_low = float(c['open']), float(c['close']), float(c['high']), float(c['low'])
+
+    is_green = c_close > c_open
+    is_red = c_close < c_open
+
+    body = abs(c_close - c_open)
+    total_size = c_high - c_low
+
+    if total_size == 0 or body == 0:
         return None, 0, "Flat Market"
 
-    # Position in range (0.0 means exactly at Support, 1.0 means exactly at Resistance)
-    position = (current_price - recent_low) / (recent_high - recent_low)
+    upper_wick = c_high - max(c_close, c_open)
+    lower_wick = min(c_close, c_open) - c_low
 
-    # Base Scores based on proximity to extreme levels
-    call_score = (1.0 - position) * 100  # High score if near support
-    put_score = position * 100           # High score if near resistance
+    # Body must be at least 65% of the entire candle (Strong Candle)
+    if body < (total_size * 0.65):
+        return None, 0, "Weak Candle (Choppy)"
 
-    # Candlestick Rejection (Wick Analysis)
-    last_open = opens[-1]
-    body = abs(current_price - last_open)
-    upper_wick = highs[-1] - max(current_price, last_open)
-    lower_wick = min(current_price, last_open) - lows[-1]
+    score = 80
 
-    # Add heavy bonus if wicks show rejection at these extreme levels
-    if lower_wick > body: call_score += 20
-    if upper_wick > body: put_score += 20
+    # BULLISH CALL: Strong Green Candle with ALMOST NO UPPER WICK
+    if is_green and upper_wick < (body * 0.15):
+        score += 15
+        # Extra confirmation: Previous candle was also green
+        prev_c = candles[-2]
+        if float(prev_c['close']) > float(prev_c['open']):
+            score += 3
+        return "CALL (UP) 🟢", min(score, 98), "Solid Green Close (No Upper Rejection)"
 
-    if call_score >= put_score:
-        final_score = min(call_score, 98)
-        return "CALL (UP) 🟢", final_score, "Support Level Bounce Rejection"
-    else:
-        final_score = min(put_score, 98)
-        return "PUT (DOWN) 🔴", final_score, "Resistance Level Drop Rejection"
+    # BEARISH PUT: Strong Red Candle with ALMOST NO LOWER WICK
+    if is_red and lower_wick < (body * 0.15):
+        score += 15
+        # Extra confirmation: Previous candle was also red
+        prev_c = candles[-2]
+        if float(prev_c['close']) < float(prev_c['open']):
+            score += 3
+        return "PUT (DOWN) 🔴", min(score, 98), "Solid Red Close (No Lower Rejection)"
+
+    return None, 0, "Wick Rejection Trap Avoided"
 
 def telegram_listener():
     offset = 0
@@ -220,9 +224,9 @@ def telegram_listener():
                             with state.state_lock:
                                 max_t = 4 if state.level <= 20 else 6
                                 reply = (
-                                    f"🟢 <b>QUOTEX S&R REVERSAL ENGINE ONLINE</b>\n\n"
+                                    f"🟢 <b>QUOTEX MARUBOZU ENGINE ONLINE</b>\n\n"
                                     f"🕒 <b>Clock:</b> <code>{get_ist().strftime('%H:%M:%S IST')}</code>\n"
-                                    f"📉 <b>Strategy:</b> Support/Resistance Extremes\n"
+                                    f"📉 <b>Strategy:</b> Solid Body / Wick Rejection Logic\n"
                                     f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
                                     f"💵 <b>Current Stake:</b> ${LEVELS_STAKE[state.level]}"
                                 )
@@ -236,7 +240,7 @@ threading.Thread(target=telegram_listener, daemon=True).start()
 def analyze_pair(p):
     candles = fetch_15m_candles(p)
     if candles:
-        action, score, reason = predict_snr_reversal(candles)
+        action, score, reason = predict_marubozu(candles)
         if action:
             return {
                 "pair": p,
@@ -250,9 +254,9 @@ def analyze_pair(p):
 def market_engine():
     time.sleep(2)
     send_tg(
-        "🚀 <b>S&R REVERSAL ENGINE DEPLOYED</b>\n\n"
-        "• <b>Pullback Trap Fixed:</b> Bot ab trend ke beech mein trade nahi karega. Yeh top resistance ya bottom support par trade pakdega.\n"
-        "• <b>Guaranteed Delivery:</b> Har 15 minute par 18 pairs mein se extreme setup wala signal aayega."
+        "🚀 <b>MARUBOZU ENGINE DEPLOYED</b>\n\n"
+        "• <b>The Final Logic:</b> Indicators fail in Binary Options. Ab bot sirf un candles par trade lega jinke paas strong body hai aur koi reverse poonch (wick) nahi hai.\n"
+        "• <b>Win Target:</b> Yeh pattern Quotex par trap hone se bachata hai."
     )
 
     while True:
@@ -264,7 +268,6 @@ def market_engine():
 
             time.sleep(wait_sec)
 
-            # 1. VERIFY PREVIOUS RESULT
             if state.active_trade:
                 t = state.active_trade
                 exit_price = fetch_live_price(t['pair_info'])
@@ -322,9 +325,8 @@ def market_engine():
                     send_tg("🟢 <b>60-MIN BREAK OVER: BOT RESTARTED</b>")
                     continue
 
-            # 2. FETCH NEW BEST PAIR (GUARANTEED NO-SKIP)
             best_setup = None
-            highest_score = -100 
+            highest_score = 0 
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 results = list(executor.map(analyze_pair, PAIRS))
@@ -336,7 +338,7 @@ def market_engine():
 
             if not best_setup:
                 now_ist = get_ist().strftime('%H:%M IST')
-                send_tg(f"⚠️ <b>DATA FETCH ERROR ({now_ist})</b>\n<i>Servers are down. Waiting for next candle.</i>")
+                send_tg(f"⚠️ <b>SKIPPING CYCLE ({now_ist})</b>\n<i>Koi solid Marubozu candle nahi mili. Trap hone se behtar hai wait karna.</i>")
                 continue
 
             pair_info = best_setup['pair']
@@ -355,10 +357,10 @@ def market_engine():
             ext_str = (now_ist + timedelta(minutes=15)).strftime("%H:%M:00 IST")
 
             alert = (
-                f"🎯 <b>QUOTEX S&R EXTREME SIGNAL</b>\n\n"
+                f"🎯 <b>QUOTEX MARUBOZU SIGNAL</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
                 f"🚀 <b>Prediction:</b> <b>{action}</b>\n"
-                f"🔥 <b>Reversal Strength:</b> <b>{score:.1f}%</b>\n"
+                f"🔥 <b>Setup Strength:</b> <b>{score}%</b>\n"
                 f"⏳ <b>Expiry:</b> EXACTLY 15 MINUTES\n\n"
                 f"⏱️ <b>Entry Clock:</b> <code>{ent_str}</code>\n"
                 f"🏁 <b>Exit Clock:</b> <code>{ext_str}</code>\n\n"
@@ -385,4 +387,3 @@ threading.Thread(target=market_engine, daemon=True).start()
 if __name__ == "__main__":
     while True:
         time.sleep(60)
-    
