@@ -304,4 +304,94 @@ def market_engine():
                         res_msg = (
                             f"✅ <b>15M CANDLE RESULT: WIN</b> 🟢\n\n"
                             f"📊 <b>Asset:</b> {t['name']}\n"
-                            f"📍 <b>Entry:</b> {entry_price:.{d}f} ➔ <b>Exit:</b> {exit_price:.{d}
+                            f"📍 <b>Entry:</b> {entry_price:.{d}f} ➔ <b>Exit:</b> {exit_price:.{d}f}\n"
+                            f"📈 <b>Progress:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
+                            f"💵 <b>Next Stake:</b> ${LEVELS_STAKE[state.level]}"
+                        )
+                    else:
+                        state.consecutive_losses += 1
+                        state.trade_step = 1
+                        exit_disp = f"{exit_price:.{d}f}" if exit_price else "API Error"
+                        res_msg = (
+                            f"⚠️️ <b>15M CANDLE RESULT: LOSS</b> 🔴\n\n"
+                            f"📊 <b>Asset:</b> {t['name']}\n"
+                            f"📍 <b>Entry:</b> {entry_price:.{d}f} ➔ <b>Exit:</b> {exit_disp}\n"
+                            f"🛡️ <b>Step Reset:</b> Level {state.level} (Trade 1/{max_t})\n"
+                            f"💵 <b>Stake:</b> ${LEVELS_STAKE[state.level]}"
+                        )
+
+                send_tg(res_msg)
+                state.active_trade = None
+
+                if state.consecutive_losses >= 2:
+                    send_tg("🚨 <b>2 CONSECUTIVE LOSSES: SYSTEM RESTING FOR 60 MINS</b>")
+                    time.sleep(3600)
+                    with state.state_lock:
+                        state.consecutive_losses = 0
+                        state.level = 1
+                        state.trade_step = 1
+                    send_tg("🟢 <b>60-MIN BREAK OVER: BOT RESTARTED</b>")
+                    continue
+
+            best_setup = None
+            highest_score = -999 
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                results = list(executor.map(analyze_pair, PAIRS))
+                
+            for res in results:
+                if res and res["score"] > highest_score:
+                    highest_score = res["score"]
+                    best_setup = res
+
+            if not best_setup:
+                now_ist = get_ist().strftime('%H:%M IST')
+                send_tg(f"⚠️ <b>API ERROR ({now_ist})</b>\n<i>Servers are down. Waiting for next candle.</i>")
+                continue
+
+            pair_info = best_setup['pair']
+            cur_price = best_setup['price']
+            action = best_setup['action']
+            score = best_setup['score']
+            reason = best_setup['reason']
+            d = pair_info['digits']
+
+            with state.state_lock:
+                max_t = 4 if state.level <= 20 else 6
+                current_stake = LEVELS_STAKE[state.level]
+
+            now_ist = get_ist()
+            ent_str = now_ist.strftime("%H:%M:00 IST")
+            ext_str = (now_ist + timedelta(minutes=15)).strftime("%H:%M:00 IST")
+
+            alert = (
+                f"🎯 <b>QUOTEX COLOR-TO-COLOR SIGNAL</b>\n\n"
+                f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
+                f"🚀 <b>Prediction:</b> <b>{action}</b>\n"
+                f"🔥 <b>Trend Score:</b> <b>{score}%</b>\n"
+                f"⏳ <b>Expiry:</b> EXACTLY 15 MINUTES\n\n"
+                f"⏱️ <b>Entry Clock:</b> <code>{ent_str}</code>\n"
+                f"🏁 <b>Exit Clock:</b> <code>{ext_str}</code>\n\n"
+                f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
+                f"💵 <b>Stake Amount:</b> ${current_stake}\n"
+                f"📍 <b>Current Price:</b> <code>{cur_price:.{d}f}</code>\n"
+                f"🔬 <b>Logic:</b> <i>{reason}</i>"
+            )
+            send_tg(alert)
+
+            state.active_trade = {
+                "pair_info": pair_info,
+                "name": pair_info['name'],
+                "action": action,
+                "entry_price": cur_price
+            }
+
+        except Exception as err:
+            print(f">> [Runtime Error]: {err}")
+            time.sleep(3)
+
+threading.Thread(target=market_engine, daemon=True).start()
+
+if __name__ == "__main__":
+    while True:
+        time.sleep(60)
