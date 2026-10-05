@@ -13,7 +13,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX 15M ZERO-SKIP ENGINE LIVE", 200
+    return "QUOTEX 15M IMPULSE BREAKOUT ENGINE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -166,38 +166,58 @@ def calculate_ema(prices, period):
     return ema
 
 # -------------------------------------------------------------
-# RELATIVE MOMENTUM SCORER (GUARANTEES A SIGNAL)
+# IMPULSE BREAKOUT LOGIC (Waits for High Volume Push)
 # -------------------------------------------------------------
-def get_best_momentum(candles):
-    if not candles or len(candles) < 10:
+def evaluate_impulse_breakout(candles):
+    if not candles or len(candles) < 12:
         return None, 0, "No Data"
 
     closes = [float(c['close']) for c in candles]
     opens = [float(c['open']) for c in candles]
-    
-    ema3 = calculate_ema(closes, 3)[-1]
-    ema7 = calculate_ema(closes, 7)[-1]
-    
-    last_close = closes[-1]
-    last_open = opens[-1]
-    prev_close = closes[-2]
+    highs = [float(c['high']) for c in candles]
+    lows = [float(c['low']) for c in candles]
 
-    # Calculate basic strength
-    score = 50
-    
-    # Check overall short-term direction
-    if ema3 > ema7:
-        action = "CALL (UP) 🟢"
-        if last_close > last_open: score += 15
-        if last_close > prev_close: score += 10
-        reason = "Bullish Flow (Best Available Setup)"
-    else:
-        action = "PUT (DOWN) 🔴"
-        if last_close < last_open: score += 15
-        if last_close < prev_close: score += 10
-        reason = "Bearish Flow (Best Available Setup)"
+    # Calculate average body size of the last 10 candles (Market Baseline)
+    body_sizes = [abs(closes[i] - opens[i]) for i in range(-11, -1)]
+    avg_body = max(sum(body_sizes) / 10.0, 1e-6)
 
-    return action, min(score + 10, 95), reason # Score normalization
+    # Current Candle Stats
+    current_body = abs(closes[-1] - opens[-1])
+    current_size = highs[-1] - lows[-1]
+    
+    # Check EMA for overall direction
+    ema9 = calculate_ema(closes, 9)[-1]
+    
+    is_green = closes[-1] > opens[-1]
+    is_red = closes[-1] < opens[-1]
+
+    # IMPULSE FILTER: Candle must be at least 1.5x bigger than the average of the last 10 candles
+    if current_body < (avg_body * 1.5):
+        return None, 0, "Market Flat (No Impulse Volume)"
+
+    score = 80
+
+    if is_green and closes[-1] > ema9:
+        # Check Wick Rejection (Avoid if upper wick is too long)
+        upper_wick = highs[-1] - closes[-1]
+        if upper_wick > current_body * 0.4:
+            return None, 0, "Rejected at Top (Trap Avoided)"
+            
+        score += 15
+        reason = "Bullish Volume Breakout"
+        return "CALL (UP) 🟢", min(score, 98), reason
+
+    elif is_red and closes[-1] < ema9:
+        # Check Wick Rejection (Avoid if lower wick is too long)
+        lower_wick = closes[-1] - lows[-1]
+        if lower_wick > current_body * 0.4:
+            return None, 0, "Rejected at Bottom (Trap Avoided)"
+            
+        score += 15
+        reason = "Bearish Volume Breakout"
+        return "PUT (DOWN) 🔴", min(score, 98), reason
+
+    return None, 0, "Consolidation Zone"
 
 def telegram_listener():
     offset = 0
@@ -217,9 +237,9 @@ def telegram_listener():
                             with state.state_lock:
                                 max_t = 4 if state.level <= 20 else 6
                                 reply = (
-                                    f"🟢 <b>QUOTEX ZERO-SKIP ENGINE ONLINE</b>\n\n"
+                                    f"🟢 <b>QUOTEX IMPULSE ENGINE ONLINE</b>\n\n"
                                     f"🕒 <b>Clock:</b> <code>{get_ist().strftime('%H:%M:%S IST')}</code>\n"
-                                    f"📉 <b>Strategy:</b> Constant Momentum Tracker\n"
+                                    f"📉 <b>Strategy:</b> Volume Breakout (Anti-Trap)\n"
                                     f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
                                     f"💵 <b>Current Stake:</b> ${LEVELS_STAKE[state.level]}"
                                 )
@@ -233,7 +253,7 @@ threading.Thread(target=telegram_listener, daemon=True).start()
 def analyze_pair(p):
     candles = fetch_15m_candles(p)
     if candles:
-        action, score, reason = get_best_momentum(candles)
+        action, score, reason = evaluate_impulse_breakout(candles)
         if action:
             return {
                 "pair": p,
@@ -247,9 +267,9 @@ def analyze_pair(p):
 def market_engine():
     time.sleep(2)
     send_tg(
-        "🚀 <b>ZERO-SKIP ACTIVE ENGINE DEPLOYED</b>\n\n"
-        "• <b>Skip Rules Deleted:</b> Bot ab har 15-minute cycle par 100% signal generate karega.\n"
-        "• <b>Mechanism:</b> 18 pairs scan karke sabse best trend wale pair ko pick kiya jayega."
+        "🚀 <b>IMPULSE BREAKOUT ENGINE DEPLOYED</b>\n\n"
+        "• <b>Smart Filter Active:</b> Zabardasti ki trades band. Ab bot sirf tab signal dega jab market mein achanak se bada move (Volume) aayega.\n"
+        "• <b>Note:</b> Accurate trades ke liye thode 'SKIPS' normal hain."
     )
 
     while True:
@@ -308,16 +328,18 @@ def market_engine():
                 send_tg(res_msg)
                 state.active_trade = None
 
-                # Break logic removed for testing, bot will not rest for 60 mins anymore
                 if state.consecutive_losses >= 2:
-                    send_tg("🚨 <b>2 CONSECUTIVE LOSSES: RESETTING LEVEL TO 1 (NO PAUSE)</b>")
+                    send_tg("🚨 <b>2 CONSECUTIVE LOSSES: SYSTEM RESTING FOR 60 MINS</b>")
+                    time.sleep(3600)
                     with state.state_lock:
                         state.consecutive_losses = 0
                         state.level = 1
                         state.trade_step = 1
+                    send_tg("🟢 <b>60-MIN BREAK OVER: BOT RESTARTED</b>")
+                    continue
 
             best_setup = None
-            highest_score = -1 
+            highest_score = 0
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 results = list(executor.map(analyze_pair, PAIRS))
@@ -329,7 +351,7 @@ def market_engine():
 
             if not best_setup:
                 now_ist = get_ist().strftime('%H:%M IST')
-                send_tg(f"⚠️ <b>DATA ERROR ({now_ist})</b>\n<i>API down. Will retry exactly at next 15m mark.</i>")
+                send_tg(f"⚠️ <b>SKIPPING CYCLE ({now_ist})</b>\n<i>Market mein volume nahi hai (Choppy). Breakout ka wait kar rahe hain.</i>")
                 continue
 
             pair_info = best_setup['pair']
@@ -348,7 +370,7 @@ def market_engine():
             ext_str = (now_ist + timedelta(minutes=15)).strftime("%H:%M:00 IST")
 
             alert = (
-                f"🎯 <b>QUOTEX ACTIVE SIGNAL (NO-SKIP)</b>\n\n"
+                f"🎯 <b>QUOTEX IMPULSE BREAKOUT SIGNAL</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
                 f"🚀 <b>Prediction:</b> <b>{action}</b>\n"
                 f"🔥 <b>Momentum Score:</b> <b>{score}%</b>\n"
