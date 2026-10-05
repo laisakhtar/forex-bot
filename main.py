@@ -305,4 +305,3 @@ def market_engine():
                             f"✅ <b>15M CANDLE RESULT: WIN</b> 🟢\n\n"
                             f"📊 <b>Asset:</b> {t['name']}\n"
                             f"📍 <b>Entry:</b> {entry_price:.{d}f} ➔ <b>Exit:</b> {exit_price:.{d}
-    
