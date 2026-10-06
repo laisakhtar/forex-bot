@@ -3,6 +3,7 @@ import threading
 import time
 import json
 import urllib.request
+import math
 import concurrent.futures
 from datetime import datetime, timezone, timedelta
 from flask import Flask
@@ -13,7 +14,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX 15M COLOR-TO-COLOR ENGINE", 200
+    return "QUOTEX 15M CCI+BB ENGINE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -126,7 +127,7 @@ def fetch_live_price(pair_info):
 
 def fetch_15m_candles(pair_info):
     try:
-        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=10"
+        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=60"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=4.0) as res:
             data = json.loads(res.read().decode('utf-8'))
@@ -136,7 +137,7 @@ def fetch_15m_candles(pair_info):
         pass
 
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=15m&range=1d"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=15m&range=3d"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=4.0) as res:
             data = json.loads(res.read().decode('utf-8'))
@@ -153,7 +154,7 @@ def fetch_15m_candles(pair_info):
                         'close': float(quote['close'][i])
                     })
             if len(candles) > 0:
-                return candles[-10:]
+                return candles[-60:]
     except Exception:
         pass
     return []
@@ -165,55 +166,72 @@ def calculate_ema(prices, period):
         ema.append((price - ema[-1]) * multiplier + ema[-1])
     return ema
 
+def calculate_cci(highs, lows, closes, period=14):
+    cci_list = []
+    tps = [(h + l + c) / 3.0 for h, l, c in zip(highs, lows, closes)]
+    for i in range(period, len(tps) + 1):
+        tp_window = tps[i-period:i]
+        sma_tp = sum(tp_window) / period
+        mean_dev = sum(abs(x - sma_tp) for x in tp_window) / period
+        if mean_dev == 0:
+            cci = 0
+        else:
+            cci = (tp_window[-1] - sma_tp) / (0.015 * mean_dev)
+        cci_list.append(cci)
+    return cci_list
+
 # -------------------------------------------------------------
-# COLOR-TO-COLOR ENGINE (100% GUARANTEED SIGNAL, NO SKIPS)
+# CCI + BOLLINGER BANDS EXTREME CONFLUENCE ENGINE
 # -------------------------------------------------------------
-def evaluate_color_to_color(candles):
-    if not candles or len(candles) < 5:
-        return "CALL (UP) 🟢", 50, "Default Base"
+def evaluate_cci_bb_setup(candles):
+    if not candles or len(candles) < 55:
+        return None, 0, "Not enough data"
 
     closes = [float(c['close']) for c in candles]
     opens = [float(c['open']) for c in candles]
     highs = [float(c['high']) for c in candles]
     lows = [float(c['low']) for c in candles]
 
-    # EMA for basic trend
-    ema5 = calculate_ema(closes, 5)[-1]
-    
-    # Analyze last 2 candles
-    c1_is_green = closes[-1] > opens[-1]
-    c1_is_red = closes[-1] < opens[-1]
-    c2_is_green = closes[-2] > opens[-2]
-    c2_is_red = closes[-2] < opens[-2]
+    # Calculate Indicators
+    ema50 = calculate_ema(closes, 50)[-1]
+    cci_values = calculate_cci(highs, lows, closes, 14)
+    cci_current = cci_values[-1] if cci_values else 0
 
-    # Candle features
-    body = abs(closes[-1] - opens[-1])
-    upper_wick = highs[-1] - max(closes[-1], opens[-1])
-    lower_wick = min(closes[-1], opens[-1]) - lows[-1]
+    # Bollinger Bands (20, 2)
+    recent_closes = closes[-20:]
+    sma20 = sum(recent_closes) / 20.0
+    variance = sum((x - sma20) ** 2 for x in recent_closes) / 20.0
+    std_dev = math.sqrt(variance)
+    upper_bb = sma20 + (2 * std_dev)
+    lower_bb = sma20 - (2 * std_dev)
 
-    score = 60 # Base score for just functioning
+    last_close = closes[-1]
+    last_low = lows[-1]
+    last_high = highs[-1]
 
-    # SCORING LOGIC FOR CALL (UP)
-    call_score = score
-    if c1_is_green: call_score += 15
-    if c2_is_green: call_score += 10
-    if closes[-1] > ema5: call_score += 5
-    if upper_wick < body: call_score += 5 # No heavy upper rejection
+    score = 0
+    action = None
+    reason = ""
 
-    # SCORING LOGIC FOR PUT (DOWN)
-    put_score = score
-    if c1_is_red: put_score += 15
-    if c2_is_red: put_score += 10
-    if closes[-1] < ema5: put_score += 5
-    if lower_wick < body: put_score += 5 # No heavy lower rejection
+    # SETUP 1: BULLISH CALL (Price in uptrend, but took a sudden dip)
+    if last_close > ema50:  # Major Trend is UP
+        if last_low <= lower_bb:  # Touched bottom band
+            if cci_current < -100: # CCI shows heavily oversold
+                score = 90
+                action = "CALL (UP) 🟢"
+                reason = "CCI Oversold + BB Lower Band Bounce in Uptrend"
 
-    # We always return an action, ensuring 0 skips
-    if call_score >= put_score:
-        reason = "Color-to-Color (Following Bullish Candles)" if c1_is_green else "Bullish Bias (Default)"
-        return "CALL (UP) 🟢", min(call_score, 98), reason
-    else:
-        reason = "Color-to-Color (Following Bearish Candles)" if c1_is_red else "Bearish Bias (Default)"
-        return "PUT (DOWN) 🔴", min(put_score, 98), reason
+    # SETUP 2: BEARISH PUT (Price in downtrend, but took a sudden spike)
+    elif last_close < ema50: # Major Trend is DOWN
+        if last_high >= upper_bb: # Touched top band
+            if cci_current > 100: # CCI shows heavily overbought
+                score = 90
+                action = "PUT (DOWN) 🔴"
+                reason = "CCI Overbought + BB Upper Band Rejection in Downtrend"
+
+    if score >= 90:
+        return action, score, reason
+    return None, 0, "Searching for perfect CCI+BB extreme..."
 
 def telegram_listener():
     offset = 0
@@ -233,9 +251,9 @@ def telegram_listener():
                             with state.state_lock:
                                 max_t = 4 if state.level <= 20 else 6
                                 reply = (
-                                    f"🟢 <b>QUOTEX COLOR-TO-COLOR ENGINE ONLINE</b>\n\n"
+                                    f"🟢 <b>QUOTEX CCI+BB ENGINE ONLINE</b>\n\n"
                                     f"🕒 <b>Clock:</b> <code>{get_ist().strftime('%H:%M:%S IST')}</code>\n"
-                                    f"📉 <b>Strategy:</b> Trend Following (No Volume Locks)\n"
+                                    f"📉 <b>Strategy:</b> CCI Extreme & Bollinger Bounce\n"
                                     f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
                                     f"💵 <b>Current Stake:</b> ${LEVELS_STAKE[state.level]}"
                                 )
@@ -249,22 +267,23 @@ threading.Thread(target=telegram_listener, daemon=True).start()
 def analyze_pair(p):
     candles = fetch_15m_candles(p)
     if candles:
-        action, score, reason = evaluate_color_to_color(candles)
-        return {
-            "pair": p,
-            "action": action,
-            "score": score,
-            "reason": reason,
-            "price": float(candles[-1]['close'])
-        }
+        action, score, reason = evaluate_cci_bb_setup(candles)
+        if action:
+            return {
+                "pair": p,
+                "action": action,
+                "score": score,
+                "reason": reason,
+                "price": float(candles[-1]['close'])
+            }
     return None
 
 def market_engine():
     time.sleep(2)
     send_tg(
-        "🚀 <b>COLOR-TO-COLOR ENGINE DEPLOYED</b>\n\n"
-        "• <b>Skip Rules Removed:</b> Sab volume filters delete kar diye gaye hain.\n"
-        "• <b>Guaranteed Signal:</b> Har 15-minute (:00, :15, :30, :45) par sabse solid color trend wale pair par signal aayega."
+        "🎯 <b>CCI + BOLLINGER BAND ENGINE DEPLOYED</b>\n\n"
+        "• <b>Real Accuracy:</b> Zero-skip (zabardasti trade) hata di gayi hai.\n"
+        "• <b>Setup:</b> Bot ab sirf tab trade lega jab price BB ko touch karega aur CCI extreme par hoga. Accuracy > Quantity."
     )
 
     while True:
@@ -313,7 +332,7 @@ def market_engine():
                         state.trade_step = 1
                         exit_disp = f"{exit_price:.{d}f}" if exit_price else "API Error"
                         res_msg = (
-                            f"⚠️️ <b>15M CANDLE RESULT: LOSS</b> 🔴\n\n"
+                            f"⚠️ <b>15M CANDLE RESULT: LOSS</b> 🔴\n\n"
                             f"📊 <b>Asset:</b> {t['name']}\n"
                             f"📍 <b>Entry:</b> {entry_price:.{d}f} ➔ <b>Exit:</b> {exit_disp}\n"
                             f"🛡️ <b>Step Reset:</b> Level {state.level} (Trade 1/{max_t})\n"
@@ -334,7 +353,7 @@ def market_engine():
                     continue
 
             best_setup = None
-            highest_score = -999 
+            highest_score = 0 
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 results = list(executor.map(analyze_pair, PAIRS))
@@ -346,7 +365,7 @@ def market_engine():
 
             if not best_setup:
                 now_ist = get_ist().strftime('%H:%M IST')
-                send_tg(f"⚠️ <b>API ERROR ({now_ist})</b>\n<i>Servers are down. Waiting for next candle.</i>")
+                send_tg(f"⚠️ <b>SKIPPING CYCLE ({now_ist})</b>\n<i>Waiting for perfect CCI & Bollinger Band setup. Accuracy is priority.</i>")
                 continue
 
             pair_info = best_setup['pair']
@@ -365,10 +384,10 @@ def market_engine():
             ext_str = (now_ist + timedelta(minutes=15)).strftime("%H:%M:00 IST")
 
             alert = (
-                f"🎯 <b>QUOTEX COLOR-TO-COLOR SIGNAL</b>\n\n"
+                f"🎯 <b>QUOTEX CCI+BB SIGNAL</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
                 f"🚀 <b>Prediction:</b> <b>{action}</b>\n"
-                f"🔥 <b>Trend Score:</b> <b>{score}%</b>\n"
+                f"🔥 <b>Setup Strength:</b> <b>{score}%</b>\n"
                 f"⏳ <b>Expiry:</b> EXACTLY 15 MINUTES\n\n"
                 f"⏱️ <b>Entry Clock:</b> <code>{ent_str}</code>\n"
                 f"🏁 <b>Exit Clock:</b> <code>{ext_str}</code>\n\n"
@@ -395,3 +414,4 @@ threading.Thread(target=market_engine, daemon=True).start()
 if __name__ == "__main__":
     while True:
         time.sleep(60)
+            
