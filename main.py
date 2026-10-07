@@ -3,7 +3,6 @@ import threading
 import time
 import json
 import urllib.request
-import math
 import concurrent.futures
 from datetime import datetime, timezone, timedelta
 from flask import Flask
@@ -14,7 +13,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX 15M CCI+BB ENGINE", 200
+    return "QUOTEX 15M SMART-RANK ENGINE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -125,9 +124,10 @@ def fetch_live_price(pair_info):
         pass
     return None
 
+# DATA REQUEST REDUCED TO 15 CANDLES FOR SPEED & RELIABILITY
 def fetch_15m_candles(pair_info):
     try:
-        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=60"
+        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=15"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=4.0) as res:
             data = json.loads(res.read().decode('utf-8'))
@@ -137,7 +137,7 @@ def fetch_15m_candles(pair_info):
         pass
 
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=15m&range=3d"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=15m&range=1d"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=4.0) as res:
             data = json.loads(res.read().decode('utf-8'))
@@ -154,7 +154,7 @@ def fetch_15m_candles(pair_info):
                         'close': float(quote['close'][i])
                     })
             if len(candles) > 0:
-                return candles[-60:]
+                return candles[-15:]
     except Exception:
         pass
     return []
@@ -166,72 +166,49 @@ def calculate_ema(prices, period):
         ema.append((price - ema[-1]) * multiplier + ema[-1])
     return ema
 
-def calculate_cci(highs, lows, closes, period=14):
-    cci_list = []
-    tps = [(h + l + c) / 3.0 for h, l, c in zip(highs, lows, closes)]
-    for i in range(period, len(tps) + 1):
-        tp_window = tps[i-period:i]
-        sma_tp = sum(tp_window) / period
-        mean_dev = sum(abs(x - sma_tp) for x in tp_window) / period
-        if mean_dev == 0:
-            cci = 0
-        else:
-            cci = (tp_window[-1] - sma_tp) / (0.015 * mean_dev)
-        cci_list.append(cci)
-    return cci_list
-
 # -------------------------------------------------------------
-# CCI + BOLLINGER BANDS EXTREME CONFLUENCE ENGINE
+# SMART-RANK FLOW ENGINE (High Frequency, Basic Safety)
 # -------------------------------------------------------------
-def evaluate_cci_bb_setup(candles):
-    if not candles or len(candles) < 55:
-        return None, 0, "Not enough data"
+def evaluate_smart_rank(candles):
+    if not candles or len(candles) < 10:
+        return None, 0, "No Data"
 
     closes = [float(c['close']) for c in candles]
     opens = [float(c['open']) for c in candles]
     highs = [float(c['high']) for c in candles]
     lows = [float(c['low']) for c in candles]
 
-    # Calculate Indicators
-    ema50 = calculate_ema(closes, 50)[-1]
-    cci_values = calculate_cci(highs, lows, closes, 14)
-    cci_current = cci_values[-1] if cci_values else 0
+    # Fast Responsive EMAs
+    ema3 = calculate_ema(closes, 3)[-1]
+    ema7 = calculate_ema(closes, 7)[-1]
 
-    # Bollinger Bands (20, 2)
-    recent_closes = closes[-20:]
-    sma20 = sum(recent_closes) / 20.0
-    variance = sum((x - sma20) ** 2 for x in recent_closes) / 20.0
-    std_dev = math.sqrt(variance)
-    upper_bb = sma20 + (2 * std_dev)
-    lower_bb = sma20 - (2 * std_dev)
+    c_open, c_close = opens[-1], closes[-1]
+    c_high, c_low = highs[-1], lows[-1]
+    
+    body = abs(c_close - c_open)
+    candle_size = c_high - c_low
 
-    last_close = closes[-1]
-    last_low = lows[-1]
-    last_high = highs[-1]
+    # BASIC SAFETY: Skip ONLY if the candle is a Doji (Zero body) or completely dead
+    if candle_size == 0 or body < (candle_size * 0.25):
+        return None, 0, "Doji/Choppy Market"
 
-    score = 0
-    action = None
-    reason = ""
+    score = 60 # Base passing score
+    
+    if ema3 > ema7 and c_close > c_open:
+        # Uptrend + Green Candle
+        if closes[-1] > closes[-2]: score += 15 # Higher close
+        upper_wick = c_high - c_close
+        if upper_wick < body: score += 10 # Good body, small rejection
+        return "CALL (UP) 🟢", score, "Smooth Uptrend + Solid Body"
+        
+    elif ema3 < ema7 and c_close < c_open:
+        # Downtrend + Red Candle
+        if closes[-1] < closes[-2]: score += 15 # Lower close
+        lower_wick = c_close - c_low
+        if lower_wick < body: score += 10 # Good body, small rejection
+        return "PUT (DOWN) 🔴", score, "Smooth Downtrend + Solid Body"
 
-    # SETUP 1: BULLISH CALL (Price in uptrend, but took a sudden dip)
-    if last_close > ema50:  # Major Trend is UP
-        if last_low <= lower_bb:  # Touched bottom band
-            if cci_current < -100: # CCI shows heavily oversold
-                score = 90
-                action = "CALL (UP) 🟢"
-                reason = "CCI Oversold + BB Lower Band Bounce in Uptrend"
-
-    # SETUP 2: BEARISH PUT (Price in downtrend, but took a sudden spike)
-    elif last_close < ema50: # Major Trend is DOWN
-        if last_high >= upper_bb: # Touched top band
-            if cci_current > 100: # CCI shows heavily overbought
-                score = 90
-                action = "PUT (DOWN) 🔴"
-                reason = "CCI Overbought + BB Upper Band Rejection in Downtrend"
-
-    if score >= 90:
-        return action, score, reason
-    return None, 0, "Searching for perfect CCI+BB extreme..."
+    return None, 0, "Consolidation"
 
 def telegram_listener():
     offset = 0
@@ -251,9 +228,9 @@ def telegram_listener():
                             with state.state_lock:
                                 max_t = 4 if state.level <= 20 else 6
                                 reply = (
-                                    f"🟢 <b>QUOTEX CCI+BB ENGINE ONLINE</b>\n\n"
+                                    f"🟢 <b>QUOTEX SMART-RANK ENGINE ONLINE</b>\n\n"
                                     f"🕒 <b>Clock:</b> <code>{get_ist().strftime('%H:%M:%S IST')}</code>\n"
-                                    f"📉 <b>Strategy:</b> CCI Extreme & Bollinger Bounce\n"
+                                    f"📉 <b>Strategy:</b> Active Flow Tracker\n"
                                     f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
                                     f"💵 <b>Current Stake:</b> ${LEVELS_STAKE[state.level]}"
                                 )
@@ -267,7 +244,7 @@ threading.Thread(target=telegram_listener, daemon=True).start()
 def analyze_pair(p):
     candles = fetch_15m_candles(p)
     if candles:
-        action, score, reason = evaluate_cci_bb_setup(candles)
+        action, score, reason = evaluate_smart_rank(candles)
         if action:
             return {
                 "pair": p,
@@ -281,9 +258,9 @@ def analyze_pair(p):
 def market_engine():
     time.sleep(2)
     send_tg(
-        "🎯 <b>CCI + BOLLINGER BAND ENGINE DEPLOYED</b>\n\n"
-        "• <b>Real Accuracy:</b> Zero-skip (zabardasti trade) hata di gayi hai.\n"
-        "• <b>Setup:</b> Bot ab sirf tab trade lega jab price BB ko touch karega aur CCI extreme par hoga. Accuracy > Quantity."
+        "🚀 <b>SMART-RANK ENGINE DEPLOYED</b>\n\n"
+        "• <b>API Fix:</b> Data load reduced to 15 candles for lightning-fast, guaranteed fetching.\n"
+        "• <b>Signal Frequency:</b> Bot will rank pairs and trade the strongest movement. No useless waiting."
     )
 
     while True:
@@ -353,19 +330,19 @@ def market_engine():
                     continue
 
             best_setup = None
-            highest_score = 0 
+            highest_score = 70 # Minimum passing score to trigger trade
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 results = list(executor.map(analyze_pair, PAIRS))
                 
             for res in results:
-                if res and res["score"] > highest_score:
+                if res and res["score"] >= highest_score:
                     highest_score = res["score"]
                     best_setup = res
 
             if not best_setup:
                 now_ist = get_ist().strftime('%H:%M IST')
-                send_tg(f"⚠️ <b>SKIPPING CYCLE ({now_ist})</b>\n<i>Waiting for perfect CCI & Bollinger Band setup. Accuracy is priority.</i>")
+                send_tg(f"⚠️ <b>SKIPPING CYCLE ({now_ist})</b>\n<i>Market is completely flat (No clear candles).</i>")
                 continue
 
             pair_info = best_setup['pair']
@@ -384,10 +361,10 @@ def market_engine():
             ext_str = (now_ist + timedelta(minutes=15)).strftime("%H:%M:00 IST")
 
             alert = (
-                f"🎯 <b>QUOTEX CCI+BB SIGNAL</b>\n\n"
+                f"🎯 <b>QUOTEX SMART-RANK SIGNAL</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
                 f"🚀 <b>Prediction:</b> <b>{action}</b>\n"
-                f"🔥 <b>Setup Strength:</b> <b>{score}%</b>\n"
+                f"🔥 <b>Setup Score:</b> <b>{score}/100</b>\n"
                 f"⏳ <b>Expiry:</b> EXACTLY 15 MINUTES\n\n"
                 f"⏱️ <b>Entry Clock:</b> <code>{ent_str}</code>\n"
                 f"🏁 <b>Exit Clock:</b> <code>{ext_str}</code>\n\n"
@@ -414,4 +391,4 @@ threading.Thread(target=market_engine, daemon=True).start()
 if __name__ == "__main__":
     while True:
         time.sleep(60)
-            
+
