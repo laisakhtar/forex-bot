@@ -13,7 +13,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX 15M GUARANTEED ENGINE LIVE", 200
+    return "QUOTEX 15M STOCHASTIC ENGINE LIVE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -54,25 +54,26 @@ LEVELS_STAKE = {
     26: 5112968.68, 27: 9305603.00, 28: 16936197.46, 29: 30823879.37, 30: 56099460.46
 }
 
+# 18 Pairs (Crypto highlighted for Weekends)
 PAIRS = [
-    {"name": "EUR/USD", "deriv": "frxEURUSD", "yahoo": "EURUSD=X", "digits": 5},
-    {"name": "GBP/USD", "deriv": "frxGBPUSD", "yahoo": "GBPUSD=X", "digits": 5},
-    {"name": "USD/JPY", "deriv": "frxUSDJPY", "yahoo": "JPY=X", "digits": 3},
-    {"name": "AUD/USD", "deriv": "frxAUDUSD", "yahoo": "AUDUSD=X", "digits": 5},
-    {"name": "USD/CAD", "deriv": "frxUSDCAD", "yahoo": "CAD=X", "digits": 5},
-    {"name": "USD/CHF", "deriv": "frxUSDCHF", "yahoo": "CHF=X", "digits": 5},
-    {"name": "NZD/USD", "deriv": "frxNZDUSD", "yahoo": "NZDUSD=X", "digits": 5},
-    {"name": "EUR/GBP", "deriv": "frxEURGBP", "yahoo": "EURGBP=X", "digits": 5},
-    {"name": "EUR/JPY", "deriv": "frxEURJPY", "yahoo": "EURJPY=X", "digits": 3},
-    {"name": "GBP/JPY", "deriv": "frxGBPJPY", "yahoo": "GBPJPY=X", "digits": 3},
-    {"name": "AUD/JPY", "deriv": "frxAUDJPY", "yahoo": "AUDJPY=X", "digits": 3},
-    {"name": "CAD/JPY", "deriv": "frxCADJPY", "yahoo": "CADJPY=X", "digits": 3},
-    {"name": "EUR/AUD", "deriv": "frxEURAUD", "yahoo": "EURAUD=X", "digits": 5},
-    {"name": "EUR/CAD", "deriv": "frxEURCAD", "yahoo": "EURCAD=X", "digits": 5},
-    {"name": "GBP/AUD", "deriv": "frxGBPAUD", "yahoo": "GBPAUD=X", "digits": 5},
-    {"name": "GOLD (XAU/USD)", "deriv": "frxXAUUSD", "yahoo": "GC=F", "digits": 2},
-    {"name": "BTC/USD", "deriv": "cryBTCUSD", "yahoo": "BTC-USD", "digits": 2},
-    {"name": "ETH/USD", "deriv": "cryETHUSD", "yahoo": "ETH-USD", "digits": 2}
+    {"name": "BTC/USD", "deriv": "cryBTCUSD", "yahoo": "BTC-USD", "digits": 2, "is_crypto": True},
+    {"name": "ETH/USD", "deriv": "cryETHUSD", "yahoo": "ETH-USD", "digits": 2, "is_crypto": True},
+    {"name": "EUR/USD", "deriv": "frxEURUSD", "yahoo": "EURUSD=X", "digits": 5, "is_crypto": False},
+    {"name": "GBP/USD", "deriv": "frxGBPUSD", "yahoo": "GBPUSD=X", "digits": 5, "is_crypto": False},
+    {"name": "USD/JPY", "deriv": "frxUSDJPY", "yahoo": "JPY=X", "digits": 3, "is_crypto": False},
+    {"name": "AUD/USD", "deriv": "frxAUDUSD", "yahoo": "AUDUSD=X", "digits": 5, "is_crypto": False},
+    {"name": "USD/CAD", "deriv": "frxUSDCAD", "yahoo": "CAD=X", "digits": 5, "is_crypto": False},
+    {"name": "USD/CHF", "deriv": "frxUSDCHF", "yahoo": "CHF=X", "digits": 5, "is_crypto": False},
+    {"name": "NZD/USD", "deriv": "frxNZDUSD", "yahoo": "NZDUSD=X", "digits": 5, "is_crypto": False},
+    {"name": "EUR/GBP", "deriv": "frxEURGBP", "yahoo": "EURGBP=X", "digits": 5, "is_crypto": False},
+    {"name": "EUR/JPY", "deriv": "frxEURJPY", "yahoo": "EURJPY=X", "digits": 3, "is_crypto": False},
+    {"name": "GBP/JPY", "deriv": "frxGBPJPY", "yahoo": "GBPJPY=X", "digits": 3, "is_crypto": False},
+    {"name": "AUD/JPY", "deriv": "frxAUDJPY", "yahoo": "AUDJPY=X", "digits": 3, "is_crypto": False},
+    {"name": "CAD/JPY", "deriv": "frxCADJPY", "yahoo": "CADJPY=X", "digits": 3, "is_crypto": False},
+    {"name": "EUR/AUD", "deriv": "frxEURAUD", "yahoo": "EURAUD=X", "digits": 5, "is_crypto": False},
+    {"name": "EUR/CAD", "deriv": "frxEURCAD", "yahoo": "EURCAD=X", "digits": 5, "is_crypto": False},
+    {"name": "GBP/AUD", "deriv": "frxGBPAUD", "yahoo": "GBPAUD=X", "digits": 5, "is_crypto": False},
+    {"name": "GOLD (XAU/USD)", "deriv": "frxXAUUSD", "yahoo": "GC=F", "digits": 2, "is_crypto": False}
 ]
 
 class SafeEngineState:
@@ -103,18 +104,6 @@ def send_tg(text):
 
 def fetch_live_price(pair_info):
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=1m&range=1d"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=3.5) as res:
-            data = json.loads(res.read().decode('utf-8'))
-            meta = data['chart']['result'][0]['meta']
-            price = float(meta.get('regularMarketPrice', 0))
-            if price > 0:
-                return price
-    except Exception:
-        pass
-
-    try:
         url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=2"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=3.0) as res:
@@ -124,14 +113,33 @@ def fetch_live_price(pair_info):
                 return float(candles[-1]['close'])
     except Exception:
         pass
+        
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=1m&range=1d"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=3.0) as res:
+            data = json.loads(res.read().decode('utf-8'))
+            meta = data['chart']['result'][0]['meta']
+            return float(meta.get('regularMarketPrice', 0))
+    except Exception:
+        pass
     return None
 
-# FIXED DATA FETCHER: 5-Day Range ensures data is NEVER empty
 def fetch_15m_candles(pair_info):
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=15m&range=5d"
+        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=20"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=4.5) as res:
+        with urllib.request.urlopen(req, timeout=4.0) as res:
+            data = json.loads(res.read().decode('utf-8'))
+            if 'candles' in data and len(data['candles']) > 0:
+                return data['candles']
+    except Exception:
+        pass
+
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=15m&range=3d"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=4.0) as res:
             data = json.loads(res.read().decode('utf-8'))
             res_data = data['chart']['result'][0]
             timestamps = res_data['timestamp']
@@ -145,18 +153,8 @@ def fetch_15m_candles(pair_info):
                         'low': float(quote['low'][i]),
                         'close': float(quote['close'][i])
                     })
-            if len(candles) >= 15:
-                return candles[-25:]
-    except Exception:
-        pass
-
-    try:
-        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=900&count=25"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=4.0) as res:
-            data = json.loads(res.read().decode('utf-8'))
-            if 'candles' in data and len(data['candles']) >= 10:
-                return data['candles']
+            if len(candles) > 0:
+                return candles[-20:]
     except Exception:
         pass
     return []
@@ -170,11 +168,32 @@ def calculate_ema(prices, period):
         ema.append((price - ema[-1]) * multiplier + ema[-1])
     return ema
 
+def calculate_stochastic(highs, lows, closes, k_period=14, d_period=3):
+    if len(closes) < k_period:
+        return [], []
+    k_values = []
+    for i in range(k_period, len(closes) + 1):
+        highest_high = max(highs[i-k_period:i])
+        lowest_low = min(lows[i-k_period:i])
+        current_close = closes[i-1]
+        if highest_high == lowest_low:
+            k = 50
+        else:
+            k = ((current_close - lowest_low) / (highest_high - lowest_low)) * 100
+        k_values.append(k)
+        
+    d_values = []
+    if len(k_values) >= d_period:
+        for i in range(d_period, len(k_values) + 1):
+            d_values.append(sum(k_values[i-d_period:i]) / d_period)
+            
+    return k_values, d_values
+
 # -------------------------------------------------------------
-# GUARANTEED SCORING ENGINE (NEVER RETURNS NONE IF DATA EXISTS)
+# STOCHASTIC ZERO-SKIP ENGINE (Guarantees Trade Every 15 Min)
 # -------------------------------------------------------------
-def score_pair_setup(candles):
-    if not candles or len(candles) < 6:
+def score_pair_stochastic(candles, is_crypto):
+    if not candles or len(candles) < 15:
         return None
 
     closes = [float(c['close']) for c in candles]
@@ -182,52 +201,51 @@ def score_pair_setup(candles):
     highs = [float(c['high']) for c in candles]
     lows = [float(c['low']) for c in candles]
 
-    ema5 = calculate_ema(closes, 5)[-1]
-    ema13 = calculate_ema(closes, 13)[-1]
+    # Technicals
+    ema10 = calculate_ema(closes, 10)[-1]
+    k_vals, d_vals = calculate_stochastic(highs, lows, closes, 14, 3)
+    
+    if not k_vals or not d_vals:
+        return None
 
-    # Check last completed candle (-2) and current forming/closing candle (-1)
-    c_open, c_close = opens[-1], closes[-1]
-    c_high, c_low = highs[-1], lows[-1]
-    prev_open, prev_close = opens[-2], closes[-2]
+    current_k = k_vals[-1]
+    current_d = d_vals[-1]
+    
+    c_close = closes[-1]
+    c_open = opens[-1]
 
-    body = abs(c_close - c_open)
-    total_range = max(c_high - c_low, 1e-6)
-    upper_wick = c_high - max(c_open, c_close)
-    lower_wick = min(c_open, c_close) - c_low
+    call_score = 50
+    put_score = 50
 
-    call_pts = 50
-    put_pts = 50
+    # STOCHASTIC LOGIC
+    # Bullish: K crosses above D, or K is rising from bottom
+    if current_k > current_d:
+        call_score += 20
+        if current_k < 40: call_score += 15 # Bounce from bottom
+    
+    # Bearish: K crosses below D, or K is falling from top
+    if current_k < current_d:
+        put_score += 20
+        if current_k > 60: put_score += 15 # Drop from top
 
-    # 1. Trend Direction (EMA 5 vs EMA 13)
-    if ema5 > ema13:
-        call_pts += 15
+    # TREND LOGIC
+    if c_close > ema10: call_score += 15
+    if c_close < ema10: put_score += 15
+
+    # CANDLE MOMENTUM LOGIC
+    if c_close > c_open: call_score += 10
+    if c_close < c_open: put_score += 10
+
+    # WEEKEND BONUS: If it's crypto on a weekend, boost the score because Forex is dead
+    today = datetime.now(timezone(timedelta(hours=5, minutes=30))).weekday()
+    if today >= 5 and is_crypto: # 5 is Saturday, 6 is Sunday
+        call_score += 25
+        put_score += 25
+
+    if call_score >= put_score:
+        return "CALL (UP) 🟢", min(call_score, 98), "Stochastic Bullish Crossover & Trend"
     else:
-        put_pts += 15
-
-    # 2. Candle Pressure & Wick Rejection
-    if c_close > c_open:
-        call_pts += 15
-        if body > (total_range * 0.5) and upper_wick < body:
-            call_pts += 12 # Solid green candle without top rejection
-        elif upper_wick > (body * 1.5):
-            put_pts += 25  # Shooting star reversal signal
-    else:
-        put_pts += 15
-        if body > (total_range * 0.5) and lower_wick < body:
-            put_pts += 12  # Solid red candle without bottom rejection
-        elif lower_wick > (body * 1.5):
-            call_pts += 25 # Hammer reversal signal
-
-    # 3. 2-Candle Momentum Continuation
-    if c_close > prev_close and prev_close > prev_open:
-        call_pts += 8
-    if c_close < prev_close and prev_close < prev_open:
-        put_pts += 8
-
-    if call_pts >= put_pts:
-        return "CALL (UP) 🟢", min(call_pts, 96), "Bullish Pressure + EMA/Wick Confirmation"
-    else:
-        return "PUT (DOWN) 🔴", min(put_pts, 96), "Bearish Pressure + EMA/Wick Confirmation"
+        return "PUT (DOWN) 🔴", min(put_score, 98), "Stochastic Bearish Crossover & Trend"
 
 def telegram_listener():
     offset = 0
@@ -247,7 +265,7 @@ def telegram_listener():
                             with state.state_lock:
                                 max_t = 4 if state.level <= 20 else 6
                                 reply = (
-                                    f"🟢 <b>QUOTEX GUARANTEED ENGINE ONLINE</b>\n\n"
+                                    f"🟢 <b>QUOTEX STOCHASTIC ENGINE ONLINE</b>\n\n"
                                     f"🕒 <b>Clock:</b> <code>{get_ist().strftime('%H:%M:%S IST')}</code>\n"
                                     f"📉 <b>Mode:</b> Zero-Skip Guaranteed Delivery\n"
                                     f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
@@ -263,7 +281,7 @@ threading.Thread(target=telegram_listener, daemon=True).start()
 def analyze_pair(p):
     candles = fetch_15m_candles(p)
     if candles:
-        res = score_pair_setup(candles)
+        res = score_pair_stochastic(candles, p.get("is_crypto", False))
         if res:
             action, score, reason = res
             return {
@@ -278,9 +296,9 @@ def analyze_pair(p):
 def market_engine():
     time.sleep(2)
     send_tg(
-        "🔥 <b>GUARANTEED SIGNAL ENGINE ACTIVATED</b>\n\n"
-        "• <b>Bug Fixed:</b> Yahoo 5-Day data feed restored.\n"
-        "• <b>Zero Skip Lock:</b> Score filter removed. Bot ab har 15 minute par 100% top-scored pair ka signal bhejega."
+        "🔥 <b>STOCHASTIC ZERO-SKIP ENGINE ACTIVATED</b>\n\n"
+        "• <b>Skip Filter Removed:</b> Ab bot kabhi skip nahi karega. Har 15 minute signal aayega.\n"
+        "• <b>Weekend Logic:</b> Aaj market band hai, isliye bot Crypto (BTC/ETH) par focus karega jismein asli volume hai."
     )
 
     while True:
@@ -340,6 +358,7 @@ def market_engine():
                 send_tg(res_msg)
                 state.active_trade = None
 
+                # ZERO-SKIP: No resting for 60 mins. Just reset level and continue immediately.
                 if state.consecutive_losses >= 2:
                     send_tg("🚨 <b>2 CONSECUTIVE LOSSES: RESETTING TO LEVEL 1 (NO PAUSE)</b>")
                     with state.state_lock:
@@ -347,11 +366,11 @@ def market_engine():
                         state.level = 1
                         state.trade_step = 1
 
-            # 2. SCAN & PICK HIGHEST SCORED PAIR (NO MINIMUM THRESHOLD BLOCK)
+            # 2. SCAN & PICK HIGHEST SCORED PAIR (ZERO SKIPS)
             best_setup = None
-            highest_score = -1
+            highest_score = -999 # This ensures a trade is picked no matter what
             
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 results = list(executor.map(analyze_pair, PAIRS))
                 
             for res in results:
@@ -383,8 +402,8 @@ def market_engine():
                 f"🎯 <b>QUOTEX 15M SIGNAL</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
                 f"🚀 <b>Prediction:</b> <b>{action}</b>\n"
-                f"🔥 <b>Confidence Score:</b> <b>{score}%</b>\n"
-                f"⏳ <b>Expiry:</b> EXACTLY 15 MINUTES (1 Candle)\n\n"
+                f"🔥 <b>Momentum Score:</b> <b>{score}%</b>\n"
+                f"⏳ <b>Expiry:</b> EXACTLY 15 MINUTES\n\n"
                 f"⏱️ <b>Entry Clock:</b> <code>{ent_str}</code>\n"
                 f"🏁 <b>Exit Clock:</b> <code>{ext_str}</code>\n\n"
                 f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
@@ -410,4 +429,3 @@ threading.Thread(target=market_engine, daemon=True).start()
 if __name__ == "__main__":
     while True:
         time.sleep(60)
-    
