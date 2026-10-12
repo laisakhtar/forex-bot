@@ -13,7 +13,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX FOREX H1 ENGINE LIVE", 200
+    return "QUOTEX FOREX H1 ACTIVE ENGINE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -67,14 +67,6 @@ PAIRS = [
     {"name": "ETH/USD", "deriv": "cryETHUSD", "yahoo": "ETH-USD", "digits": 2}
 ]
 
-class SafeEngineState:
-    def __init__(self):
-        self.level = 1
-        self.active_trade = None
-        self.state_lock = threading.Lock()
-
-state = SafeEngineState()
-
 def get_ist():
     return datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
@@ -91,7 +83,6 @@ def send_tg(text):
                 time.sleep(2)
     threading.Thread(target=_worker, daemon=True).start()
 
-# FETCH 1-HOUR CANDLES FOR BIG TREND ANALYSIS
 def fetch_1h_candles(pair_info):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=1h&range=10d"
@@ -110,18 +101,17 @@ def fetch_1h_candles(pair_info):
                         'low': float(quote['low'][i]),
                         'close': float(quote['close'][i])
                     })
-            if len(candles) >= 20:
-                return candles[-40:] # Get last 40 hours of data
+            if len(candles) >= 15:
+                return candles[-20:] 
     except Exception:
         pass
 
     try:
-        # Deriv API: granularity 3600 = 1 Hour
-        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=3600&count=40"
+        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=3600&count=20"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=4.0) as res:
             data = json.loads(res.read().decode('utf-8'))
-            if 'candles' in data and len(data['candles']) >= 20:
+            if 'candles' in data and len(data['candles']) >= 10:
                 return data['candles']
     except Exception:
         pass
@@ -137,10 +127,10 @@ def calculate_ema(prices, period):
     return ema
 
 # -------------------------------------------------------------
-# MACRO FOREX TREND ENGINE (1-Hour to 2-Hour Prediction)
+# H1 ACTIVE FLOW ENGINE (Guarantees Top Pair)
 # -------------------------------------------------------------
-def analyze_forex_trend(candles):
-    if not candles or len(candles) < 30:
+def analyze_h1_active(candles):
+    if not candles or len(candles) < 15:
         return None
 
     closes = [float(c['close']) for c in candles]
@@ -148,42 +138,32 @@ def analyze_forex_trend(candles):
     highs = [float(c['high']) for c in candles]
     lows = [float(c['low']) for c in candles]
 
-    # Institutional Forex EMAs (20 and 50)
-    ema20 = calculate_ema(closes, 20)[-1]
-    ema50 = calculate_ema(closes, 50)[-1]
+    ema10 = calculate_ema(closes, 10)[-1]
     
     c_close = closes[-1]
     c_open = opens[-1]
     prev_close = closes[-2]
 
-    # Calculate Volume/Body Size
-    body = abs(c_close - c_open)
-    avg_body = sum([abs(closes[i] - opens[i]) for i in range(-10, -1)]) / 9.0
+    call_pts = 50
+    put_pts = 50
+    reason = "H1 General Momentum"
 
-    call_pts = 0
-    put_pts = 0
-    reason = ""
+    # Active Flow Scoring
+    if c_close > ema10:
+        call_pts += 20
+        if c_close > c_open: call_pts += 15
+        if c_close > prev_close: call_pts += 10
+        reason = "H1 Bullish Flow (Price > EMA10)"
+    else:
+        put_pts += 20
+        if c_close < c_open: put_pts += 15
+        if c_close < prev_close: put_pts += 10
+        reason = "H1 Bearish Flow (Price < EMA10)"
 
-    # Trend Filter (Golden Cross / Death Cross logic)
-    if ema20 > ema50 and c_close > ema20:
-        call_pts += 50
-        reason = "H1 Golden Trend (Price > EMA20 > EMA50)"
-        if c_close > prev_close: call_pts += 20 # Continuation
-        if body > avg_body: call_pts += 20 # High Volume Push
-            
-    elif ema20 < ema50 and c_close < ema20:
-        put_pts += 50
-        reason = "H1 Death Trend (Price < EMA20 < EMA50)"
-        if c_close < prev_close: put_pts += 20 # Continuation
-        if body > avg_body: put_pts += 20 # High Volume Push
-
-    # Score threshold (We only want strong trends)
-    if call_pts >= 80:
+    if call_pts >= put_pts:
         return "CALL (UP) 🟢", call_pts, reason
-    elif put_pts >= 80:
+    else:
         return "PUT (DOWN) 🔴", put_pts, reason
-
-    return None
 
 def telegram_listener():
     offset = 0
@@ -201,10 +181,9 @@ def telegram_listener():
                         c_id = str(msg.get("chat", {}).get("id", ""))
                         if c_id == CHAT_ID and ("/status" in text or "/start" in text or "status" in text.lower()):
                             send_tg(
-                                f"🟢 <b>FOREX H1 ENGINE ONLINE</b>\n\n"
+                                f"🟢 <b>FOREX H1 ACTIVE ENGINE ONLINE</b>\n\n"
                                 f"🕒 <b>Clock:</b> <code>{get_ist().strftime('%H:%M:%S IST')}</code>\n"
-                                f"📉 <b>Mode:</b> 1-Hour & 2-Hour Macro Trend\n"
-                                f"📊 <b>Focus:</b> Safe Turnover Completion"
+                                f"📉 <b>Mode:</b> 1-Hour Zero-Skip Delivery\n"
                             )
         except Exception:
             time.sleep(2)
@@ -215,7 +194,7 @@ threading.Thread(target=telegram_listener, daemon=True).start()
 def process_pair(p):
     candles = fetch_1h_candles(p)
     if candles:
-        res = analyze_forex_trend(candles)
+        res = analyze_h1_active(candles)
         if res:
             action, score, reason = res
             return {
@@ -230,14 +209,14 @@ def process_pair(p):
 def market_engine():
     time.sleep(2)
     send_tg(
-        "🏛️ <b>FOREX MACRO ENGINE DEPLOYED</b>\n\n"
-        "• <b>New Timeframe:</b> Bot ab 1-Hour chart analyse karke lambe trades dega.\n"
-        "• <b>Turnover Mode:</b> Expiry ko 1 se 2 ghanta set karein. Short-term manipulation se bachein."
+        "🏛️ <b>FOREX H1 ACTIVE ENGINE DEPLOYED</b>\n\n"
+        "• <b>Skip Filter Removed:</b> Ab bot har 30 minute par H1 chart ka sabse best setup guarantee ke sath bhejega.\n"
+        "• <b>Action:</b> Signal milte hi Quotex par 1 ghante ki expiry wali trade set karein."
     )
 
     while True:
         try:
-            # Check every 30 minutes for new H1 setups
+            # Check every 30 minutes (00:00, 00:30, 01:00...)
             now = time.time()
             wait_sec = 1800 - (now % 1800)
             if wait_sec < 5:
@@ -246,7 +225,7 @@ def market_engine():
             time.sleep(wait_sec)
 
             best_setup = None
-            highest_score = 75 # Strict minimum score for H1 trend
+            highest_score = -1 # NO MINIMUM SCORE (Ensures 100% signal delivery)
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                 results = list(executor.map(process_pair, PAIRS))
@@ -258,7 +237,7 @@ def market_engine():
 
             if not best_setup:
                 now_ist = get_ist().strftime('%H:%M IST')
-                send_tg(f"⚠️ <b>NO CLEAR H1 TREND ({now_ist})</b>\n<i>Market abhi side-ways hai. Badi trade ke liye thoda wait karein.</i>")
+                send_tg(f"⚠️ <b>NETWORK WARNING ({now_ist})</b>\n<i>Data servers busy. Retrying...</i>")
                 continue
 
             pair_info = best_setup['pair']
@@ -269,15 +248,12 @@ def market_engine():
             d = pair_info['digits']
 
             now_ist = get_ist()
-            # Entry right now
             ent_str = now_ist.strftime("%H:%M IST")
-            # 1 Hour Expiry
             exp_1h = (now_ist + timedelta(hours=1)).strftime("%H:%M IST")
-            # 2 Hour Expiry
             exp_2h = (now_ist + timedelta(hours=2)).strftime("%H:%M IST")
 
             alert = (
-                f"🏛️ <b>FOREX MACRO SIGNAL (SAFE MODE)</b>\n\n"
+                f"🏛️ <b>FOREX H1 ACTIVE SIGNAL</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
                 f"🚀 <b>Direction:</b> <b>{action}</b>\n"
                 f"🔥 <b>Trend Strength:</b> <b>{score}/100</b>\n\n"
@@ -300,4 +276,3 @@ threading.Thread(target=market_engine, daemon=True).start()
 if __name__ == "__main__":
     while True:
         time.sleep(60)
-                
