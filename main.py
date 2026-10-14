@@ -13,7 +13,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX FOREX H1 ACTIVE ENGINE", 200
+    return "QUOTEX H1 COMPOUNDING ENGINE LIVE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -45,10 +45,14 @@ try:
 except Exception:
     pass
 
-# Turnover safe compounding (1% to 2% risk recommended)
+# 30-LEVEL COMPOUNDING LADDER RESTORED
 LEVELS_STAKE = {
-    1: 3.00, 2: 5.50, 3: 10.00, 4: 18.00, 5: 32.00,
-    6: 58.00, 7: 105.00, 8: 190.00, 9: 345.00, 10: 620.00
+    1: 1.61, 2: 2.93, 3: 5.33, 4: 9.71, 5: 17.67,
+    6: 32.15, 7: 58.52, 8: 106.51, 9: 193.85, 10: 352.80,
+    11: 642.10, 12: 1168.62, 13: 2126.89, 14: 3870.94, 15: 7045.11,
+    16: 12822.10, 17: 23336.23, 18: 42471.93, 19: 77298.92, 20: 140684.03,
+    21: 256044.94, 22: 466001.78, 23: 848123.25, 24: 1543584.31, 25: 2809323.45,
+    26: 5112968.68, 27: 9305603.00, 28: 16936197.46, 29: 30823879.37, 30: 56099460.46
 }
 
 PAIRS = [
@@ -67,6 +71,16 @@ PAIRS = [
     {"name": "ETH/USD", "deriv": "cryETHUSD", "yahoo": "ETH-USD", "digits": 2}
 ]
 
+class SafeEngineState:
+    def __init__(self):
+        self.level = 1
+        self.trade_step = 1
+        self.consecutive_losses = 0
+        self.active_trade = None
+        self.state_lock = threading.Lock()
+
+state = SafeEngineState()
+
 def get_ist():
     return datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
@@ -82,6 +96,29 @@ def send_tg(text):
             except Exception:
                 time.sleep(2)
     threading.Thread(target=_worker, daemon=True).start()
+
+def fetch_live_price(pair_info):
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=1m&range=1d"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=3.5) as res:
+            data = json.loads(res.read().decode('utf-8'))
+            meta = data['chart']['result'][0]['meta']
+            return float(meta.get('regularMarketPrice', 0))
+    except Exception:
+        pass
+        
+    try:
+        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=3600&count=2"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=3.0) as res:
+            data = json.loads(res.read().decode('utf-8'))
+            candles = data.get('candles', [])
+            if candles:
+                return float(candles[-1]['close'])
+    except Exception:
+        pass
+    return None
 
 def fetch_1h_candles(pair_info):
     try:
@@ -127,7 +164,7 @@ def calculate_ema(prices, period):
     return ema
 
 # -------------------------------------------------------------
-# H1 ACTIVE FLOW ENGINE (Guarantees Top Pair)
+# H1 ACTIVE FLOW ENGINE
 # -------------------------------------------------------------
 def analyze_h1_active(candles):
     if not candles or len(candles) < 15:
@@ -135,9 +172,7 @@ def analyze_h1_active(candles):
 
     closes = [float(c['close']) for c in candles]
     opens = [float(c['open']) for c in candles]
-    highs = [float(c['high']) for c in candles]
-    lows = [float(c['low']) for c in candles]
-
+    
     ema10 = calculate_ema(closes, 10)[-1]
     
     c_close = closes[-1]
@@ -148,7 +183,6 @@ def analyze_h1_active(candles):
     put_pts = 50
     reason = "H1 General Momentum"
 
-    # Active Flow Scoring
     if c_close > ema10:
         call_pts += 20
         if c_close > c_open: call_pts += 15
@@ -165,67 +199,83 @@ def analyze_h1_active(candles):
     else:
         return "PUT (DOWN) 🔴", put_pts, reason
 
-def telegram_listener():
-    offset = 0
-    while True:
-        try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}&timeout=5"
-            req = urllib.request.Request(url)
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-                if data.get("ok"):
-                    for item in data.get("result", []):
-                        offset = item["update_id"] + 1
-                        msg = item.get("message", {})
-                        text = msg.get("text", "").strip()
-                        c_id = str(msg.get("chat", {}).get("id", ""))
-                        if c_id == CHAT_ID and ("/status" in text or "/start" in text or "status" in text.lower()):
-                            send_tg(
-                                f"🟢 <b>FOREX H1 ACTIVE ENGINE ONLINE</b>\n\n"
-                                f"🕒 <b>Clock:</b> <code>{get_ist().strftime('%H:%M:%S IST')}</code>\n"
-                                f"📉 <b>Mode:</b> 1-Hour Zero-Skip Delivery\n"
-                            )
-        except Exception:
-            time.sleep(2)
-        time.sleep(1)
-
-threading.Thread(target=telegram_listener, daemon=True).start()
-
-def process_pair(p):
-    candles = fetch_1h_candles(p)
-    if candles:
-        res = analyze_h1_active(candles)
-        if res:
-            action, score, reason = res
-            return {
-                "pair": p,
-                "action": action,
-                "score": score,
-                "reason": reason,
-                "price": float(candles[-1]['close'])
-            }
-    return None
-
 def market_engine():
     time.sleep(2)
     send_tg(
-        "🏛️ <b>FOREX H1 ACTIVE ENGINE DEPLOYED</b>\n\n"
-        "• <b>Skip Filter Removed:</b> Ab bot har 30 minute par H1 chart ka sabse best setup guarantee ke sath bhejega.\n"
-        "• <b>Action:</b> Signal milte hi Quotex par 1 ghante ki expiry wali trade set karein."
+        "🏛️ <b>SYNCED COMPOUNDING ENGINE DEPLOYED</b>\n\n"
+        "• <b>30-Level Ladder Restored:</b> Ab har signal mein exact level aur stake amount dikhega.\n"
+        "• <b>1-Hour Loop:</b> Bot theek 1 ghante baad pichli trade ka Win/Loss check karke naya signal dega."
     )
 
     while True:
         try:
-            # Check every 30 minutes (00:00, 00:30, 01:00...)
+            # WAIT LOOP FIXED TO 1 HOUR (3600 SECONDS)
             now = time.time()
-            wait_sec = 1800 - (now % 1800)
+            wait_sec = 3600 - (now % 3600)
             if wait_sec < 5:
-                wait_sec += 1800
+                wait_sec += 3600
 
             time.sleep(wait_sec)
 
+            # 1. CHECK PREVIOUS 1-HOUR TRADE RESULT
+            if state.active_trade:
+                t = state.active_trade
+                exit_price = fetch_live_price(t['pair_info'])
+                entry_price = t['entry_price']
+                action = t['action']
+                d = t['pair_info']['digits']
+
+                with state.state_lock:
+                    max_t = 4 if state.level <= 20 else 6
+                    if exit_price and entry_price:
+                        if "CALL" in action:
+                            is_win = (exit_price >= entry_price) 
+                        else:
+                            is_win = (exit_price <= entry_price)
+                    else:
+                        is_win = False
+
+                    if is_win:
+                        state.consecutive_losses = 0
+                        if state.trade_step < max_t:
+                            state.trade_step += 1
+                        else:
+                            state.level = min(30, state.level + 1)
+                            state.trade_step = 1
+
+                        res_msg = (
+                            f"✅ <b>H1 RESULT: WIN</b> 🟢\n\n"
+                            f"📊 <b>Asset:</b> {t['name']}\n"
+                            f"📍 <b>Entry:</b> {entry_price:.{d}f} ➔ <b>Exit:</b> {exit_price:.{d}f}\n"
+                            f"📈 <b>Progress:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
+                            f"💵 <b>Next Stake:</b> ${LEVELS_STAKE[state.level]}"
+                        )
+                    else:
+                        state.consecutive_losses += 1
+                        state.trade_step = 1
+                        exit_disp = f"{exit_price:.{d}f}" if exit_price else "API Error"
+                        res_msg = (
+                            f"⚠️ <b>H1 RESULT: LOSS</b> 🔴\n\n"
+                            f"📊 <b>Asset:</b> {t['name']}\n"
+                            f"📍 <b>Entry:</b> {entry_price:.{d}f} ➔ <b>Exit:</b> {exit_disp}\n"
+                            f"🛡️ <b>Step Reset:</b> Level {state.level} (Trade 1/{max_t})\n"
+                            f"💵 <b>Stake:</b> ${LEVELS_STAKE[state.level]}"
+                        )
+
+                send_tg(res_msg)
+                state.active_trade = None
+
+                # Reset Level on 2 Consecutive Losses
+                if state.consecutive_losses >= 2:
+                    send_tg("🚨 <b>2 CONSECUTIVE LOSSES: RESETTING TO LEVEL 1</b>")
+                    with state.state_lock:
+                        state.consecutive_losses = 0
+                        state.level = 1
+                        state.trade_step = 1
+
+            # 2. FETCH NEW 1-HOUR SIGNAL
             best_setup = None
-            highest_score = -1 # NO MINIMUM SCORE (Ensures 100% signal delivery)
+            highest_score = -1 
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                 results = list(executor.map(process_pair, PAIRS))
@@ -237,7 +287,7 @@ def market_engine():
 
             if not best_setup:
                 now_ist = get_ist().strftime('%H:%M IST')
-                send_tg(f"⚠️ <b>NETWORK WARNING ({now_ist})</b>\n<i>Data servers busy. Retrying...</i>")
+                send_tg(f"⚠️ <b>API ERROR ({now_ist})</b>\n<i>Retrying on next cycle.</i>")
                 continue
 
             pair_info = best_setup['pair']
@@ -247,10 +297,13 @@ def market_engine():
             reason = best_setup['reason']
             d = pair_info['digits']
 
+            with state.state_lock:
+                max_t = 4 if state.level <= 20 else 6
+                current_stake = LEVELS_STAKE[state.level]
+
             now_ist = get_ist()
             ent_str = now_ist.strftime("%H:%M IST")
             exp_1h = (now_ist + timedelta(hours=1)).strftime("%H:%M IST")
-            exp_2h = (now_ist + timedelta(hours=2)).strftime("%H:%M IST")
 
             alert = (
                 f"🏛️ <b>FOREX H1 ACTIVE SIGNAL</b>\n\n"
@@ -259,13 +312,20 @@ def market_engine():
                 f"🔥 <b>Trend Strength:</b> <b>{score}/100</b>\n\n"
                 f"⏳ <b>TRADING WINDOW:</b>\n"
                 f"🟢 <b>Entry Time:</b> <code>{ent_str}</code> (Now)\n"
-                f"🛑 <b>Expiry Set 1:</b> <code>{exp_1h}</code> (1 Hour)\n"
-                f"🛑 <b>Expiry Set 2:</b> <code>{exp_2h}</code> (2 Hours)\n\n"
-                f"💵 <b>Recommended Stake:</b> 1% to 2% of Balance\n"
+                f"🛑 <b>Expiry Set:</b> <code>{exp_1h}</code> (EXACTLY 1 HOUR)\n\n"
+                f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
+                f"💵 <b>Stake Amount:</b> ${current_stake}\n"
                 f"📍 <b>Current Price:</b> <code>{cur_price:.{d}f}</code>\n"
                 f"🔬 <b>Logic:</b> <i>{reason}</i>"
             )
             send_tg(alert)
+
+            state.active_trade = {
+                "pair_info": pair_info,
+                "name": pair_info['name'],
+                "action": action,
+                "entry_price": cur_price
+            }
 
         except Exception as err:
             print(f">> [Runtime Error]: {err}")
@@ -276,3 +336,4 @@ threading.Thread(target=market_engine, daemon=True).start()
 if __name__ == "__main__":
     while True:
         time.sleep(60)
+    
