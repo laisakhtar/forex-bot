@@ -10,7 +10,8 @@ def health():
     return "QUOTEX LIVE TIMER & 18-ASSET ENGINE ACTIVE", 200
 
 def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), use_reloader=False, threaded=True)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, use_reloader=False, threaded=True)
 
 threading.Thread(target=run_flask, daemon=True).start()
 
@@ -60,7 +61,7 @@ def get_ladder(g_step):
         return ((g_step - 1) // 4) + 1, ((g_step - 1) % 4) + 1, 4
     rem = g_step - 80
     lvl = min(30, ((rem - 1) // 6) + 21)
-    trd = 6 if lvl == 30 and rem > 60 else ((rem - 1) % 6) + 1
+    trd = 6 if (lvl == 30 and rem > 60) else (((rem - 1) % 6) + 1)
     return lvl, trd, 6
 
 def get_ist():
@@ -121,10 +122,16 @@ def fetch_yahoo(symbol, interval, rng):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": f"Mozilla/5.0/{ts%991}", "Cache-Control": "no-cache"})
             with urllib.request.urlopen(req, timeout=4.0) as r:
-                res = json.loads(r.read().decode())["chart"]["result"][0]
+                raw = json.loads(r.read().decode())
+                res = raw["chart"]["result"][0]
                 reg = res.get("meta", {}).get("regularMarketPrice")
-                q = res["indicators']['quote'][0]" if False else res["indicators"]["quote"][0]
-                c_list = [{"open": float(o), "close": float(c)} for o, c in zip(q.get("open", []), q.get("close", [])) if o is not None and c is not None]
+                q = res["indicators"]["quote"][0]
+                opens = q.get("open", [])
+                closes = q.get("close", [])
+                c_list = []
+                for o, c in zip(opens, closes):
+                    if o is not None and c is not None:
+                        c_list.append({"open": float(o), "close": float(c)})
                 return c_list, (float(reg) if reg is not None else None)
         except Exception:
             continue
@@ -139,8 +146,8 @@ def get_live_tick(pair_info):
 
 def analyze_pair(pair_info, tv_data):
     sym = pair_info["yahoo"]
-    c_30m, _     = fetch_yahoo(sym, "30m", "1mo")
-    c_15m, _     = fetch_yahoo(sym, "15m", "5d")
+    c_30m, _ = fetch_yahoo(sym, "30m", "1mo")
+    c_15m, _ = fetch_yahoo(sym, "15m", "5d")
     c_5m, reg_5m = fetch_yahoo(sym, "5m", "5d")
     c_1m, reg_1m = fetch_yahoo(sym, "1m", "1d")
 
@@ -157,7 +164,7 @@ def analyze_pair(pair_info, tv_data):
         live_p = reg_5m if (reg_5m and reg_5m > 0) else c_30m[-1]["close"]
 
     open_30m = c_30m[-1]["open"]
-    d5  = (live_p - c_5m[-2]["close"]) / live_p
+    d5 = (live_p - c_5m[-2]["close"]) / live_p
     d15 = (live_p - (c_15m[-2]["close"] if len(c_15m) >= 2 else open_30m)) / live_p
     d30 = (live_p - c_30m[-2]["close"]) / live_p
     d60 = (live_p - c_30m[-3]["close"]) / live_p
@@ -188,8 +195,12 @@ def analyze_pair(pair_info, tv_data):
     dn_prob = (dn_w / (up_w + dn_w)) * 100.0
 
     if tv_data and tv_data.get("Recommend.All|30") is not None:
-        tf_flow = (float(tv_data.get("Recommend.All|5") or 0)*0.2 + float(tv_data.get("Recommend.All|15") or 0)*0.25 +
-                   float(tv_data.get("Recommend.All|30") or 0)*0.3 + float(tv_data.get("Recommend.All|60") or 0)*0.25)
+        tf_flow = (
+            float(tv_data.get("Recommend.All|5") or 0)*0.2 +
+            float(tv_data.get("Recommend.All|15") or 0)*0.25 +
+            float(tv_data.get("Recommend.All|30") or 0)*0.3 +
+            float(tv_data.get("Recommend.All|60") or 0)*0.25
+        )
         up_prob = up_prob * 0.6 + (50.0 + tf_flow * 40.0) * 0.4
         dn_prob = dn_prob * 0.6 + (50.0 - tf_flow * 40.0) * 0.4
 
@@ -207,7 +218,12 @@ def format_msg(s, lvl, trd, mx, stake, ent_s, exp_s, live_p, rem_s, closed=False
     d, pip, ent_p = p["digits"], p["pip"], s["price"]
     pips = (live_p - ent_p) / pip
     signed_pips = pips if "CALL" in s["action"] else -pips
-    status = "⚪ <b>AT ENTRY (0.0 Pips)</b>" if abs(live_p - ent_p) < pip*0.1 else (f"🟢 <b>IN PROFIT ({signed_pips:+.1f} Pips)</b>" if signed_pips > 0 else f"🔴 <b>PULLBACK ({signed_pips:+.1f} Pips)</b>")
+    if abs(live_p - ent_p) < pip * 0.1:
+        status = "⚪ <b>AT ENTRY (0.0 Pips)</b>"
+    elif signed_pips > 0:
+        status = f"🟢 <b>IN PROFIT ({signed_pips:+.1f} Pips)</b>"
+    else:
+        status = f"🔴 <b>PULLBACK ({signed_pips:+.1f} Pips)</b>"
     timer_str = f"🏁 <b>CANDLE CLOSED ({exp_s})</b>" if closed else f"⏳ <b>Close Hone Mein Baki:</b> <code>{int(rem_s)//60:02d}m {int(rem_s)%60:02d}s</code>"
     return (
         f"⚡ <b>LIVE REAL-TIME PRICE & TIMER SIGNAL</b>\n\n"
