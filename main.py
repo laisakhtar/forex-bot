@@ -7,13 +7,15 @@ import concurrent.futures
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 
-# 1. Keep-Alive Web Server
+# ==========================================
+# 1. SERVER KEEP-ALIVE (Render Anti-Sleep)
+# ==========================================
 app = Flask(__name__)
 
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX H1 COMPOUNDING ENGINE LIVE", 200
+    return "QUOTEX PRO LADDER & MTFA ENGINE LIVE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -36,7 +38,9 @@ def render_anti_freeze():
 
 threading.Thread(target=render_anti_freeze, daemon=True).start()
 
-# 2. Telegram Credentials
+# ==========================================
+# 2. TELEGRAM CONFIG & ASSETS
+# ==========================================
 BOT_TOKEN = "8807036352:AAGwVcFaIxvVU7xUIWFDHlHUwKM3vGdLbuw"
 CHAT_ID = "5883050661"
 
@@ -45,7 +49,7 @@ try:
 except Exception:
     pass
 
-# 30-LEVEL COMPOUNDING LADDER RESTORED
+# 30-LEVEL STAKE AMOUNTS
 LEVELS_STAKE = {
     1: 1.61, 2: 2.93, 3: 5.33, 4: 9.71, 5: 17.67,
     6: 32.15, 7: 58.52, 8: 106.51, 9: 193.85, 10: 352.80,
@@ -71,15 +75,36 @@ PAIRS = [
     {"name": "ETH/USD", "deriv": "cryETHUSD", "yahoo": "ETH-USD", "digits": 2}
 ]
 
-class SafeEngineState:
+# ==========================================
+# 3. THE MASTER LADDER SYSTEM (Global Step)
+# ==========================================
+class MasterEngineState:
     def __init__(self):
-        self.level = 1
-        self.trade_step = 1
-        self.consecutive_losses = 0
+        self.global_step = 1 # Starts at Trade 1 of Level 1
         self.active_trade = None
         self.state_lock = threading.Lock()
 
-state = SafeEngineState()
+state = MasterEngineState()
+
+def get_ladder_info(g_step):
+    """
+    Translates global_step into (Level, Trade_In_Level, Max_Trades_For_Level)
+    Levels 1-20: 4 trades each (80 steps total)
+    Levels 21-30: 6 trades each (60 steps total)
+    Total steps = 140
+    """
+    if g_step <= 80:
+        level = ((g_step - 1) // 4) + 1
+        trade_num = ((g_step - 1) % 4) + 1
+        return level, trade_num, 4
+    else:
+        rem_step = g_step - 80
+        level = ((rem_step - 1) // 6) + 21
+        trade_num = ((rem_step - 1) % 6) + 1
+        if level > 30:
+            level = 30
+            trade_num = 6
+        return level, trade_num, 6
 
 def get_ist():
     return datetime.now(timezone(timedelta(hours=5, minutes=30)))
@@ -97,6 +122,9 @@ def send_tg(text):
                 time.sleep(2)
     threading.Thread(target=_worker, daemon=True).start()
 
+# ==========================================
+# 4. DATA FETCHING (Yahoo Finance Multi-Timeframe)
+# ==========================================
 def fetch_live_price(pair_info):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=1m&range=1d"
@@ -107,24 +135,13 @@ def fetch_live_price(pair_info):
             return float(meta.get('regularMarketPrice', 0))
     except Exception:
         pass
-        
-    try:
-        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=3600&count=2"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=3.0) as res:
-            data = json.loads(res.read().decode('utf-8'))
-            candles = data.get('candles', [])
-            if candles:
-                return float(candles[-1]['close'])
-    except Exception:
-        pass
     return None
 
-def fetch_1h_candles(pair_info):
+def fetch_yahoo_data(symbol, interval, rng):
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={interval}&range={rng}"
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair_info['yahoo']}?interval=1h&range=10d"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=4.5) as res:
+        with urllib.request.urlopen(req, timeout=4.0) as res:
             data = json.loads(res.read().decode('utf-8'))
             res_data = data['chart']['result'][0]
             timestamps = res_data['timestamp']
@@ -132,27 +149,18 @@ def fetch_1h_candles(pair_info):
             candles = []
             for i in range(len(timestamps)):
                 if quote['close'][i] is not None and quote['open'][i] is not None:
+                    vol = quote.get('volume', [0]*len(timestamps))[i]
+                    if vol is None: vol = 0
                     candles.append({
                         'open': float(quote['open'][i]),
                         'high': float(quote['high'][i]),
                         'low': float(quote['low'][i]),
-                        'close': float(quote['close'][i])
+                        'close': float(quote['close'][i]),
+                        'volume': float(vol)
                     })
-            if len(candles) >= 15:
-                return candles[-20:] 
+            return candles
     except Exception:
-        pass
-
-    try:
-        url = f"https://api.deriv.com/api/v1/candles?symbol={pair_info['deriv']}&granularity=3600&count=20"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=4.0) as res:
-            data = json.loads(res.read().decode('utf-8'))
-            if 'candles' in data and len(data['candles']) >= 10:
-                return data['candles']
-    except Exception:
-        pass
-    return []
+        return []
 
 def calculate_ema(prices, period):
     if len(prices) < period:
@@ -163,63 +171,82 @@ def calculate_ema(prices, period):
         ema.append((price - ema[-1]) * multiplier + ema[-1])
     return ema
 
-# -------------------------------------------------------------
-# H1 ACTIVE FLOW ENGINE
-# -------------------------------------------------------------
-def analyze_h1_active(candles):
-    if not candles or len(candles) < 15:
+# ==========================================
+# 5. AI MTFA & VOLUME ANALYSIS (Core Engine)
+# ==========================================
+def analyze_mtfa_volume(pair_info):
+    symbol = pair_info['yahoo']
+    
+    # Fetch 3 timeframes for institutional level confirmation
+    c_30m = fetch_yahoo_data(symbol, '30m', '5d')
+    c_15m = fetch_yahoo_data(symbol, '15m', '3d')
+    c_5m = fetch_yahoo_data(symbol, '5m', '1d')
+    
+    if len(c_30m) < 10 or len(c_15m) < 10 or len(c_5m) < 10:
         return None
 
-    closes = [float(c['close']) for c in candles]
-    opens = [float(c['open']) for c in candles]
+    call_score = 0
+    put_score = 0
+    logic = []
+
+    # 1. 30M Macro Price Action (Body vs Wick)
+    last_30m = c_30m[-1]
+    body_30m = abs(last_30m['close'] - last_30m['open'])
+    rng_30m = max(last_30m['high'] - last_30m['low'], 1e-6)
     
-    ema10 = calculate_ema(closes, 10)[-1]
+    if last_30m['close'] > last_30m['open']:
+        if body_30m > rng_30m * 0.5: # Strong Bullish Candle
+            call_score += 30
+            logic.append("30M Bullish Control")
+    else:
+        if body_30m > rng_30m * 0.5: # Strong Bearish Candle
+            put_score += 30
+            logic.append("30M Bearish Control")
+
+    # 2. 15M Continuation Flow
+    if c_15m[-1]['close'] > c_15m[-2]['close']:
+        call_score += 20
+        logic.append("15M Momentum UP")
+    else:
+        put_score += 20
+        logic.append("15M Momentum DOWN")
+
+    # 3. 5M Volume Anomaly (Where is the smart money?)
+    vols_5m = [c['volume'] for c in c_5m[-6:-1]] 
+    avg_vol_5m = sum(vols_5m) / 5.0 if vols_5m else 1.0
+    current_vol_5m = c_5m[-1]['volume']
     
-    c_close = closes[-1]
-    c_open = opens[-1]
-    prev_close = closes[-2]
-
-    call_pts = 50
-    put_pts = 50
-    reason = "H1 General Momentum"
-
-    if c_close > ema10:
-        call_pts += 20
-        if c_close > c_open: call_pts += 15
-        if c_close > prev_close: call_pts += 10
-        reason = "H1 Bullish Flow (Price > EMA10)"
+    vol_bonus = 25 if current_vol_5m > (avg_vol_5m * 1.2) else 10 # Extra points for volume spike
+    
+    if c_5m[-1]['close'] > c_5m[-1]['open']:
+        call_score += vol_bonus
+        if vol_bonus == 25: logic.append("5M High Buy Volume")
     else:
-        put_pts += 20
-        if c_close < c_open: put_pts += 15
-        if c_close < prev_close: put_pts += 10
-        reason = "H1 Bearish Flow (Price < EMA10)"
+        put_score += vol_bonus
+        if vol_bonus == 25: logic.append("5M High Sell Volume")
 
-    if call_pts >= put_pts:
-        return "CALL (UP) 🟢", call_pts, reason
-    else:
-        return "PUT (DOWN) 🔴", put_pts, reason
+    final_action = "CALL (UP) 🟢" if call_score >= put_score else "PUT (DOWN) 🔴"
+    final_score = max(call_score, put_score)
+    final_reason = " | ".join(logic[:3])
 
-def process_pair(p):
-    candles = fetch_1h_candles(p)
-    if candles:
-        res = analyze_h1_active(candles)
-        if res:
-            action, score, reason = res
-            return {
-                "pair": p,
-                "action": action,
-                "score": score,
-                "reason": reason,
-                "price": float(candles[-1]['close'])
-            }
-    return None
+    return {
+        "pair": pair_info,
+        "action": final_action,
+        "score": final_score,
+        "reason": final_reason,
+        "price": c_5m[-1]['close']
+    }
 
+# ==========================================
+# 6. MARKET SYNCHRONIZATION & EXECUTION
+# ==========================================
 def market_engine():
     time.sleep(2)
     send_tg(
-        "🏛️ <b>SYNCED COMPOUNDING ENGINE DEPLOYED (FIXED)</b>\n\n"
-        "• <b>Timer Bug Fixed:</b> Bot ab UTC sleep mein nahi fasega. IST clock ke hisaab se live track karega.\n"
-        "• <b>Status:</b> Pehla signal turant aayega, uske baad har ghante par sync hoga."
+        "🛡️ <b>MASTER LADDER ENGINE DEPLOYED</b>\n\n"
+        "• <b>Ladder Fixed:</b> Win par +1 Step, Loss par -1 Step Backward (Safe Buffer).\n"
+        "• <b>Level Rule:</b> L1-L20 (4 Trades), L21-L30 (6 Trades).\n"
+        "• <b>MTFA Algo:</b> 30m, 15m aur 5m Volume sync, API load balanced (max_workers=3)."
     )
 
     first_run = True
@@ -228,15 +255,15 @@ def market_engine():
         try:
             now_ist = get_ist()
 
-            # Timer Fix: Trigger immediately on first run, then exactly at the start of every hour (xx:00)
+            # TRIGGER EXACTLY AT XX:00 AND XX:30
             if not first_run:
-                if now_ist.minute != 0:
-                    time.sleep(15) # Check clock every 15 seconds
+                if now_ist.minute not in [0, 30]:
+                    time.sleep(5) 
                     continue
 
             first_run = False
 
-            # 1. CHECK PREVIOUS 1-HOUR TRADE RESULT
+            # --- 1. RESULT CHECK (Step Math Applied Here) ---
             if state.active_trade:
                 t = state.active_trade
                 exit_price = fetch_live_price(t['pair_info'])
@@ -245,59 +272,45 @@ def market_engine():
                 d = t['pair_info']['digits']
 
                 with state.state_lock:
-                    max_t = 4 if state.level <= 20 else 6
                     if exit_price and entry_price:
                         if "CALL" in action:
-                            is_win = (exit_price >= entry_price) 
+                            is_win = (exit_price > entry_price) 
                         else:
-                            is_win = (exit_price <= entry_price)
+                            is_win = (exit_price < entry_price)
                     else:
                         is_win = False
 
+                    prev_level, prev_trade, _ = get_ladder_info(state.global_step)
+
+                    # THE EXACT COMPOUNDING MATH (1 Step Forward, 1 Step Back)
                     if is_win:
-                        state.consecutive_losses = 0
-                        if state.trade_step < max_t:
-                            state.trade_step += 1
-                        else:
-                            state.level = min(30, state.level + 1)
-                            state.trade_step = 1
-
-                        res_msg = (
-                            f"✅ <b>H1 RESULT: WIN</b> 🟢\n\n"
-                            f"📊 <b>Asset:</b> {t['name']}\n"
-                            f"📍 <b>Entry:</b> {entry_price:.{d}f} ➔ <b>Exit:</b> {exit_price:.{d}f}\n"
-                            f"📈 <b>Progress:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
-                            f"💵 <b>Next Stake:</b> ${LEVELS_STAKE[state.level]}"
-                        )
+                        state.global_step += 1 # 1 STEP FORWARD
+                        res_title = "✅ <b>30M RESULT: WIN (+1 STEP)</b> 🟢"
                     else:
-                        state.consecutive_losses += 1
-                        state.trade_step = 1
-                        exit_disp = f"{exit_price:.{d}f}" if exit_price else "API Error"
-                        res_msg = (
-                            f"⚠️ <b>H1 RESULT: LOSS</b> 🔴\n\n"
-                            f"📊 <b>Asset:</b> {t['name']}\n"
-                            f"📍 <b>Entry:</b> {entry_price:.{d}f} ➔ <b>Exit:</b> {exit_disp}\n"
-                            f"🛡️ <b>Step Reset:</b> Level {state.level} (Trade 1/{max_t})\n"
-                            f"💵 <b>Stake:</b> ${LEVELS_STAKE[state.level]}"
-                        )
+                        state.global_step = max(1, state.global_step - 1) # 1 STEP BACK (Never below 1)
+                        res_title = "⚠️ <b>30M RESULT: LOSS (-1 STEP BACK)</b> 🔴"
 
+                    new_level, new_trade, new_max = get_ladder_info(state.global_step)
+                    new_stake = LEVELS_STAKE[new_level]
+
+                    exit_disp = f"{exit_price:.{d}f}" if exit_price else "API Error"
+                    
+                    res_msg = (
+                        f"{res_title}\n\n"
+                        f"📊 <b>Asset:</b> {t['name']}\n"
+                        f"📍 <b>Entry:</b> {entry_price:.{d}f} ➔ <b>Exit:</b> {exit_disp}\n"
+                        f"📈 <b>New Ladder Position:</b> Level {new_level}/30 (Trade {new_trade}/{new_max})\n"
+                        f"💵 <b>Next Stake:</b> ${new_stake}"
+                    )
                 send_tg(res_msg)
                 state.active_trade = None
 
-                # Reset Level on 2 Consecutive Losses
-                if state.consecutive_losses >= 2:
-                    send_tg("🚨 <b>2 CONSECUTIVE LOSSES: RESETTING TO LEVEL 1</b>")
-                    with state.state_lock:
-                        state.consecutive_losses = 0
-                        state.level = 1
-                        state.trade_step = 1
-
-            # 2. FETCH NEW 1-HOUR SIGNAL
+            # --- 2. FIND NEW PERFECT SETUP (API Safe mode: max_workers=3) ---
             best_setup = None
-            highest_score = -1 
+            highest_score = 65 # Minimum AI confidence required
             
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-                results = list(executor.map(process_pair, PAIRS))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                results = list(executor.map(analyze_mtfa_volume, PAIRS))
                 
             for res in results:
                 if res and res["score"] > highest_score:
@@ -306,10 +319,11 @@ def market_engine():
 
             if not best_setup:
                 now_ist = get_ist().strftime('%H:%M IST')
-                send_tg(f"⚠️ <b>API ERROR ({now_ist})</b>\n<i>Retrying on next cycle.</i>")
+                send_tg(f"⚠️ <b>NO CLEAR SETUP ({now_ist})</b>\n<i>Market is choppy. Capital protection active. Waiting for next 30m cycle.</i>")
                 time.sleep(65)
                 continue
 
+            # --- 3. SEND SIGNAL ---
             pair_info = best_setup['pair']
             cur_price = best_setup['price']
             action = best_setup['action']
@@ -318,22 +332,22 @@ def market_engine():
             d = pair_info['digits']
 
             with state.state_lock:
-                max_t = 4 if state.level <= 20 else 6
-                current_stake = LEVELS_STAKE[state.level]
+                cur_level, cur_trade, cur_max = get_ladder_info(state.global_step)
+                current_stake = LEVELS_STAKE[cur_level]
 
             now_ist = get_ist()
             ent_str = now_ist.strftime("%H:%M IST")
-            exp_1h = (now_ist + timedelta(hours=1)).strftime("%H:00 IST") # Next exact hour
+            exp_30m = (now_ist + timedelta(minutes=30)).strftime("%H:%M IST")
 
             alert = (
-                f"🏛️ <b>FOREX H1 ACTIVE SIGNAL</b>\n\n"
+                f"🧠 <b>MTFA VOLUME SIGNAL</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
                 f"🚀 <b>Direction:</b> <b>{action}</b>\n"
-                f"🔥 <b>Trend Strength:</b> <b>{score}/100</b>\n\n"
+                f"🔥 <b>AI Confidence:</b> <b>{score}/100</b>\n\n"
                 f"⏳ <b>TRADING WINDOW:</b>\n"
                 f"🟢 <b>Entry Time:</b> <code>{ent_str}</code> (Now)\n"
-                f"🛑 <b>Expiry Set:</b> <code>{exp_1h}</code> (End of current Hour)\n\n"
-                f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
+                f"🛑 <b>Expiry Set:</b> <code>{exp_30m}</code> (30 Minutes)\n\n"
+                f"📈 <b>Current Ladder:</b> Level {cur_level}/30 (Trade {cur_trade}/{cur_max})\n"
                 f"💵 <b>Stake Amount:</b> ${current_stake}\n"
                 f"📍 <b>Current Price:</b> <code>{cur_price:.{d}f}</code>\n"
                 f"🔬 <b>Logic:</b> <i>{reason}</i>"
@@ -347,7 +361,7 @@ def market_engine():
                 "entry_price": cur_price
             }
 
-            # Sleep 65 seconds to prevent double triggering in the same 00 minute
+            # Prevent double trigger in same minute
             time.sleep(65)
 
         except Exception as err:
