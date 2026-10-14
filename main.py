@@ -199,23 +199,42 @@ def analyze_h1_active(candles):
     else:
         return "PUT (DOWN) 🔴", put_pts, reason
 
+def process_pair(p):
+    candles = fetch_1h_candles(p)
+    if candles:
+        res = analyze_h1_active(candles)
+        if res:
+            action, score, reason = res
+            return {
+                "pair": p,
+                "action": action,
+                "score": score,
+                "reason": reason,
+                "price": float(candles[-1]['close'])
+            }
+    return None
+
 def market_engine():
     time.sleep(2)
     send_tg(
-        "🏛️ <b>SYNCED COMPOUNDING ENGINE DEPLOYED</b>\n\n"
-        "• <b>30-Level Ladder Restored:</b> Ab har signal mein exact level aur stake amount dikhega.\n"
-        "• <b>1-Hour Loop:</b> Bot theek 1 ghante baad pichli trade ka Win/Loss check karke naya signal dega."
+        "🏛️ <b>SYNCED COMPOUNDING ENGINE DEPLOYED (FIXED)</b>\n\n"
+        "• <b>Timer Bug Fixed:</b> Bot ab UTC sleep mein nahi fasega. IST clock ke hisaab se live track karega.\n"
+        "• <b>Status:</b> Pehla signal turant aayega, uske baad har ghante par sync hoga."
     )
+
+    first_run = True
 
     while True:
         try:
-            # WAIT LOOP FIXED TO 1 HOUR (3600 SECONDS)
-            now = time.time()
-            wait_sec = 3600 - (now % 3600)
-            if wait_sec < 5:
-                wait_sec += 3600
+            now_ist = get_ist()
 
-            time.sleep(wait_sec)
+            # Timer Fix: Trigger immediately on first run, then exactly at the start of every hour (xx:00)
+            if not first_run:
+                if now_ist.minute != 0:
+                    time.sleep(15) # Check clock every 15 seconds
+                    continue
+
+            first_run = False
 
             # 1. CHECK PREVIOUS 1-HOUR TRADE RESULT
             if state.active_trade:
@@ -288,6 +307,7 @@ def market_engine():
             if not best_setup:
                 now_ist = get_ist().strftime('%H:%M IST')
                 send_tg(f"⚠️ <b>API ERROR ({now_ist})</b>\n<i>Retrying on next cycle.</i>")
+                time.sleep(65)
                 continue
 
             pair_info = best_setup['pair']
@@ -303,7 +323,7 @@ def market_engine():
 
             now_ist = get_ist()
             ent_str = now_ist.strftime("%H:%M IST")
-            exp_1h = (now_ist + timedelta(hours=1)).strftime("%H:%M IST")
+            exp_1h = (now_ist + timedelta(hours=1)).strftime("%H:00 IST") # Next exact hour
 
             alert = (
                 f"🏛️ <b>FOREX H1 ACTIVE SIGNAL</b>\n\n"
@@ -312,7 +332,7 @@ def market_engine():
                 f"🔥 <b>Trend Strength:</b> <b>{score}/100</b>\n\n"
                 f"⏳ <b>TRADING WINDOW:</b>\n"
                 f"🟢 <b>Entry Time:</b> <code>{ent_str}</code> (Now)\n"
-                f"🛑 <b>Expiry Set:</b> <code>{exp_1h}</code> (EXACTLY 1 HOUR)\n\n"
+                f"🛑 <b>Expiry Set:</b> <code>{exp_1h}</code> (End of current Hour)\n\n"
                 f"📈 <b>Ladder:</b> Level {state.level}/30 (Trade {state.trade_step}/{max_t})\n"
                 f"💵 <b>Stake Amount:</b> ${current_stake}\n"
                 f"📍 <b>Current Price:</b> <code>{cur_price:.{d}f}</code>\n"
@@ -327,13 +347,15 @@ def market_engine():
                 "entry_price": cur_price
             }
 
+            # Sleep 65 seconds to prevent double triggering in the same 00 minute
+            time.sleep(65)
+
         except Exception as err:
             print(f">> [Runtime Error]: {err}")
-            time.sleep(5)
+            time.sleep(15)
 
 threading.Thread(target=market_engine, daemon=True).start()
 
 if __name__ == "__main__":
     while True:
         time.sleep(60)
-    
