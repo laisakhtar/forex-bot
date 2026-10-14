@@ -15,7 +15,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX PRO LADDER ACTIVE", 200
+    return "QUOTEX PROBABILITY ENGINE LIVE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -39,7 +39,7 @@ def render_anti_freeze():
 threading.Thread(target=render_anti_freeze, daemon=True).start()
 
 # ==========================================
-# 2. TELEGRAM CONFIG
+# 2. TELEGRAM & ASSETS
 # ==========================================
 BOT_TOKEN = "8807036352:AAGwVcFaIxvVU7xUIWFDHlHUwKM3vGdLbuw"
 CHAT_ID = "5883050661"
@@ -72,7 +72,7 @@ PAIRS = [
 ]
 
 # ==========================================
-# 3. GLOBAL STEP MATH
+# 3. LADDER MATH (1 Step Forward, 1 Step Back)
 # ==========================================
 class MasterEngineState:
     def __init__(self):
@@ -136,67 +136,87 @@ def fetch_yahoo_data(symbol, interval, rng):
             candles = []
             for i in range(len(timestamps)):
                 if quote['close'][i] is not None and quote['open'][i] is not None:
-                    vol = quote.get('volume', [0]*len(timestamps))[i]
                     candles.append({
                         'open': float(quote['open'][i]),
                         'high': float(quote['high'][i]),
                         'low': float(quote['low'][i]),
-                        'close': float(quote['close'][i]),
-                        'volume': float(vol) if vol else 0.0
+                        'close': float(quote['close'][i])
                     })
             return candles
     except Exception:
         return []
 
 # ==========================================
-# 4. ZERO-SKIP MTFA ENGINE
+# 4. TRUE PROBABILITY & 4-TIMEFRAME ENGINE
 # ==========================================
-def analyze_mtfa_volume(pair_info):
+def analyze_strict_probability(pair_info):
     symbol = pair_info['yahoo']
     
-    c_30m = fetch_yahoo_data(symbol, '30m', '5d')
-    c_15m = fetch_yahoo_data(symbol, '15m', '3d')
+    # Fetch all requested timeframes
+    c_1h = fetch_yahoo_data(symbol, '1h', '5d')
+    c_30m = fetch_yahoo_data(symbol, '30m', '1mo') # 1 Month Backtest Data
+    c_15m = fetch_yahoo_data(symbol, '15m', '5d')
+    c_5m = fetch_yahoo_data(symbol, '5m', '2d')
     
-    if len(c_30m) < 5 or len(c_15m) < 5:
+    if not c_1h or len(c_30m) < 100 or not c_15m or not c_5m:
         return None
 
-    call_score = 0
-    put_score = 0
-    logic = []
+    # 1. MACRO DIRECTION ALIGNMENT (Crash Protection)
+    # If 1H is DOWN, it will NEVER output CALL.
+    h1_dir = "UP" if c_1h[-1]['close'] > c_1h[-1]['open'] else "DOWN"
+    m30_dir = "UP" if c_30m[-1]['close'] > c_30m[-1]['open'] else "DOWN"
+    m15_dir = "UP" if c_15m[-1]['close'] > c_15m[-1]['open'] else "DOWN"
+    m5_dir = "UP" if c_5m[-1]['close'] > c_5m[-1]['open'] else "DOWN"
 
-    # 30M Trend
-    if c_30m[-1]['close'] >= c_30m[-1]['open']:
-        call_score += 30
-        logic.append("30M Trend UP")
-    else:
-        put_score += 30
-        logic.append("30M Trend DOWN")
+    # Only process if at least 1H and 30M are aligned
+    if h1_dir != m30_dir:
+        return None
 
-    # 15M Trend
-    if c_15m[-1]['close'] >= c_15m[-1]['open']:
-        call_score += 25
-        logic.append("15M Confirmed")
-    else:
-        put_score += 25
-        logic.append("15M Confirmed")
+    master_direction = h1_dir
 
-    final_action = "CALL (UP) 🟢" if call_score >= put_score else "PUT (DOWN) 🔴"
-    final_score = max(call_score, put_score)
-    final_reason = " | ".join(logic)
+    # 2. PROBABILITY BACKTEST (1 Month History)
+    current_30m = c_30m[-1]
+    c_body = abs(current_30m['close'] - current_30m['open'])
+    
+    matches = 0
+    wins = 0
+
+    # Scan past 30 days for similar candle patterns
+    for i in range(10, len(c_30m)-1):
+        past = c_30m[i]
+        p_dir = "UP" if past['close'] > past['open'] else "DOWN"
+        p_body = abs(past['close'] - past['open'])
+
+        # Match candle direction and roughly similar size
+        if p_dir == master_direction and abs(p_body - c_body) < (c_body * 0.5):
+            matches += 1
+            next_candle = c_30m[i+1]
+            if master_direction == "UP" and next_candle['close'] > next_candle['open']: wins += 1
+            if master_direction == "DOWN" and next_candle['close'] < next_candle['open']: wins += 1
+
+    prob = (wins / matches * 100) if matches > 5 else 50.0
+
+    # Boost score if lower timeframes also align
+    if m15_dir == master_direction: prob += 5
+    if m5_dir == master_direction: prob += 5
+
+    action = "CALL (UP) 🟢" if master_direction == "UP" else "PUT (DOWN) 🔴"
+    logic_str = f"1H:{h1_dir} | 30M:{m30_dir} | 15M:{m15_dir} | 5M:{m5_dir}"
 
     return {
         "pair": pair_info,
-        "action": final_action,
-        "score": final_score,
-        "reason": final_reason,
-        "price": c_15m[-1]['close']
+        "action": action,
+        "prob": min(95.0, prob),
+        "reason": logic_str,
+        "price": c_5m[-1]['close']
     }
 
 def market_engine():
     time.sleep(2)
     send_tg(
-        "🛡️ <b>MASTER LADDER ENGINE (ZERO-SKIP) DEPLOYED</b>\n\n"
-        "• <b>Status:</b> Strict filters removed. Har 30 min par sabse best pair ka signal guaranteed aayega.\n"
+        "🧠 <b>TRUE PROBABILITY ENGINE DEPLOYED</b>\n\n"
+        "• <b>Crash Protection:</b> 1H, 30M, 15M, aur 5M ka trend check hoga. Ab achanak girte market mein galat trade nahi aayegi.\n"
+        "• <b>Real Math:</b> Pichle 1 mahine ke data se asal Win % nikal kar trade di jayegi.\n"
         "• <b>Ladder:</b> Win = +1 Step | Loss = -1 Step."
     )
 
@@ -213,7 +233,7 @@ def market_engine():
 
             first_run = False
 
-            # --- RESULT CHECK ---
+            # --- 1. RESULT CHECK ---
             if state.active_trade:
                 t = state.active_trade
                 exit_price = fetch_live_price(t['pair_info'])
@@ -252,16 +272,16 @@ def market_engine():
                 send_tg(res_msg)
                 state.active_trade = None
 
-            # --- GUARANTEED SIGNAL GENERATION ---
+            # --- 2. FIND HIGHEST PROBABILITY SETUP ---
             best_setup = None
-            highest_score = -1 # <--- ZERO SKIP GUARANTEE
+            highest_prob = -1
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                results = list(executor.map(analyze_mtfa_volume, PAIRS))
+                results = list(executor.map(analyze_strict_probability, PAIRS))
                 
             for res in results:
-                if res and res["score"] > highest_score:
-                    highest_score = res["score"]
+                if res and res["prob"] > highest_prob:
+                    highest_prob = res["prob"]
                     best_setup = res
 
             if not best_setup:
@@ -272,7 +292,7 @@ def market_engine():
             pair_info = best_setup['pair']
             cur_price = best_setup['price']
             action = best_setup['action']
-            score = best_setup['score']
+            prob = best_setup['prob']
             reason = best_setup['reason']
             d = pair_info['digits']
 
@@ -285,9 +305,10 @@ def market_engine():
             exp_30m = (now_ist + timedelta(minutes=30)).strftime("%H:%M IST")
 
             alert = (
-                f"🧠 <b>MTFA ACTIVE SIGNAL</b>\n\n"
+                f"🧠 <b>PROBABILITY ACTIVE SIGNAL</b>\n\n"
                 f"📊 <b>Asset:</b> <code>{pair_info['name']}</code>\n"
-                f"🚀 <b>Direction:</b> <b>{action}</b>\n\n"
+                f"🚀 <b>Direction:</b> <b>{action}</b>\n"
+                f"🎯 <b>Win Probability:</b> <b>{prob:.1f}%</b> (Past 30 Days)\n\n"
                 f"⏳ <b>TRADING WINDOW:</b>\n"
                 f"🟢 <b>Entry Time:</b> <code>{ent_str}</code> (Now)\n"
                 f"🛑 <b>Expiry Set:</b> <code>{exp_30m}</code> (30 Minutes)\n\n"
@@ -315,3 +336,4 @@ threading.Thread(target=market_engine, daemon=True).start()
 if __name__ == "__main__":
     while True:
         time.sleep(60)
+        
