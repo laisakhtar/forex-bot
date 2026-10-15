@@ -8,12 +8,13 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX LIVE TICK ORDER-FLOW & BUYER/SELLER ENGINE ACTIVE", 200
+    return "QUOTEX LIVE ORDER-FLOW ENGINE ACTIVE", 200
 
 def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), use_reloader=False, threaded=True)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, use_reloader=False, threaded=True)
 
-# THREADING FIX: Flask runs in the background, Main Engine runs in the foreground.
+# Main Thread Lock for Render (No Early Exit)
 threading.Thread(target=run_flask, daemon=True).start()
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8807036352:AAGwVcFaIxvVU7xUIWFDHlHUwKM3vGdLbuw").strip()
@@ -24,7 +25,7 @@ def clear_bot_webhook():
     if not BOT_TOKEN:
         return
     try:
-        urllib.request.urlopen(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=True", timeout=5)
+        urllib.request.urlopen(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=True", timeout=4)
     except Exception:
         pass
 
@@ -84,10 +85,7 @@ def get_ist():
     return datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
 def next_close_time(now_ist):
-    if now_ist.minute < 30:
-        t = now_ist.replace(minute=30, second=0, microsecond=0)
-    else:
-        t = (now_ist + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    t = now_ist.replace(minute=30, second=0, microsecond=0) if now_ist.minute < 30 else (now_ist + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
     return t + timedelta(minutes=30) if (t - now_ist).total_seconds() < 20 else t
 
 def send_tg(text):
@@ -285,103 +283,5 @@ def format_orderflow_msg(s, lvl, trd, mx, stake, ent_s, exp_s, live_p, rem_s, li
     pips = (live_p - ent_p) / pip
     signed_pips = pips if "BUY ORDER" in s["action"] else -pips
     if abs(live_p - ent_p) < pip * 0.1:
-        status = "⚪ <b>AT ENTRY COORDINATE (0.0 Pips - Draw Safe)</b>"
-    elif signed_pips > 0:
-        status = f"🟢 <b>ORDER IN PROFIT ({signed_pips:+.1f} Pips)</b>"
-    else:
-        status = f"🔴 <b>ORDER PULLBACK ({signed_pips:+.1f} Pips)</b>"
+        status = "⚪ <b>AT ENTRY
 
-    b_pct = live_b_pct if live_b_pct is not None else s["buyer_pct"]
-    s_pct = 100.0 - b_pct
-    timer_str = f"🏁 <b>30M ORDER CYCLE SETTLED ({exp_s})</b>" if closed else f"⏳ <b>Settlement Mein Baki:</b> <code>{int(rem_s)//60:02d}m {int(rem_s)%60:02d}s</code>"
-    m_lvl, m_trd, m_mx = get_ladder(state.max_step_reached)
-    
-    lines = [
-        "⚡ <b>LIVE BUYER/SELLER ORDER-FLOW ENGINE</b>\n",
-        f"📊 <b>Asset:</b> <code>{p['name']}</code> (18-Asset Tick Scan)",
-        f"🚀 <b>Order Execution:</b> <b>{s['action']}</b>",
-        f"🎯 <b>Order Win Probability:</b> <b>{s['prob']:.2f}%</b> ({s['samples']} 30D Price Matches)\n",
-        "🏦 <b>LIVE ORDER BOOK PRESSURE (NO CANDLES):</b>",
-        f"🟢 <b>Active Buyers:</b> <code>{b_pct:.1f}%</code> | 🔴 <b>Active Sellers:</b> <code>{s_pct:.1f}%</code>",
-        f"💥 <b>Net Order Delta:</b> <code>{s['net_delta']:+.1f} Pips</code>",
-        f"⚖️ <b>Institutional VWAP Price:</b> <code>{s['vwap']:.{d}f}</code>",
-        f"🛡️ <b>Liquidity Zone:</b> <code>{s['wall_info']}</code>\n",
-        f"🎯 <b>Locked Entry Price:</b> <code>{ent_p:.{d}f}</code> ({ent_s})",
-        f"💹 <b>Live Tick Price:</b> <code>{live_p:.{d}f}</code>",
-        f"📊 <b>Live Order Status:</b> {status}\n",
-        "⏱️ <b>LIVE SETTLEMENT TIMER:</b>",
-        f"🛑 <b>Settlement Time:</b> <code>{exp_s}</code>",
-        f"{timer_str}\n",
-        f"📈 <b>Current Ladder:</b> Level {lvl}/30 (Trade {trd}/{mx})",
-        f"🏆 <b>Peak Reached:</b> Level {m_lvl}/30 (Trade {m_trd}/{m_mx})",
-        f"💵 <b>Stake Amount:</b> ${stake}",
-        f"🔬 <b>Order Tape:</b> <i>{s['flow_str']}</i>"
-    ]
-    return "\n".join(lines)
-
-def wait_for_tick_absorption_entry(pair_info, action, initial_price):
-    pip, best_p = pair_info["pip"], initial_price
-    for _ in range(4):
-        if get_ist().second > 35:
-            break
-        tick, _ = get_live_tick_with_pressure(pair_info)
-        if tick:
-            best_p = tick
-            if ("BUY ORDER" in action and tick <= initial_price - pip*0.4) or ("SELL ORDER" in action and tick >= initial_price + pip*0.4):
-                return tick
-        time.sleep(3)
-    return best_p
-
-def run_cycle():
-    clear_bot_webhook()
-    now_c = get_ist()
-    if now_c.minute in [0, 30] and now_c.second < 6:
-        time.sleep(6 - now_c.second)
-    tv_map = fetch_tv_all()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-        res_list = [r for r in ex.map(lambda p: analyze_pair_orderflow(p, tv_map.get(p["tv"])), PAIRS) if r]
-    if not res_list:
-        time.sleep(5)
-        return
-    res_list.sort(key=lambda x: (x["tier"], x["prob"]), reverse=True)
-    best = res_list[1] if (len(res_list) > 1 and res_list[0]["pair"]["name"] == state.last_pair and res_list[1]["tier"] == res_list[0]["tier"] and (res_list[0]["prob"] - res_list[1]["prob"]) < 2.0) else res_list[0]
-    p_info = best["pair"]
-    state.last_pair = p_info["name"]
-    if get_ist().minute in [0, 30] and get_ist().second < 28:
-        best["price"] = wait_for_tick_absorption_entry(p_info, best["action"], best["price"])
-    now_ist = get_ist()
-    exp_dt = next_close_time(now_ist)
-    ent_s, exp_s = now_ist.strftime("%H:%M:%S IST"), exp_dt.strftime("%H:%M:%S IST")
-    ent_p, d, pip = best["price"], p_info["digits"], p_info["pip"]
-    with state.lock:
-        lvl, trd, mx = get_ladder(state.global_step)
-        stake = LEVELS_STAKE[lvl]
-    rem_s = max(0, (exp_dt - get_ist()).total_seconds())
-    msg_id = send_tg(format_orderflow_msg(best, lvl, trd, mx, stake, ent_s, exp_s, ent_p, rem_s, best["buyer_pct"], False))
-    live_p, live_b_pct = ent_p, best["buyer_pct"]
-    while True:
-        rem_s = (exp_dt - get_ist()).total_seconds()
-        if rem_s <= 0: break
-        time.sleep(min(12.0, max(0.5, rem_s)))
-        rem_s = (exp_dt - get_ist()).total_seconds()
-        if rem_s <= 0: break
-        tick, tape_b_pct = get_live_tick_with_pressure(p_info)
-        if tick: live_p = tick
-        if tape_b_pct is not None: live_b_pct = (best["buyer_pct"] * 0.65) + (tape_b_pct * 0.35)
-        edit_tg(msg_id, format_orderflow_msg(best, lvl, trd, mx, stake, ent_s, exp_s, live_p, rem_s, live_b_pct, False))
-    final_tick, _ = get_live_tick_with_pressure(p_info)
-    if final_tick: live_p = final_tick
-    edit_tg(msg_id, format_orderflow_msg(best, lvl, trd, mx, stake, ent_s, exp_s, live_p, 0, live_b_pct, True))
-    with state.lock:
-        p_lvl, p_trd, p_mx = get_ladder(state.global_step)
-        is_draw = abs(live_p - ent_p) < (pip * 0.1)
-        win = (live_p > ent_p) if "BUY ORDER" in best["action"] else (live_p < ent_p)
-        if is_draw:
-            title, step_str = "⚪ <b>30M ORDER SETTLEMENT: DRAW (0.0 PIPS - REFUND)</b> ⚖️", f"⏸️ <b>Step Unchanged (0):</b> Level {p_lvl} (T{p_trd}/{p_mx}) ➔ "
-        elif win:
-            state.global_step += 1
-            state.total_wins += 1
-            if state.global_step > state.max_step_reached: state.max_step_reached = state.global_step
-            title, step_str = "✅ <b>30M ORDER SETTLEMENT: PROFIT (+1 STEP PLUS)</b> 🟢", f"➕ <b>Step Plus (+1):</b> Level {p_lvl} (T{p_trd}/{p_mx}) ➔ "
-        else:
-            state.global_step = max(1, state.global_step
