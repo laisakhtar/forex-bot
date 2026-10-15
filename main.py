@@ -64,8 +64,8 @@ class EngineState:
     def __init__(self):
         self.global_step = max(1, START_STEP)
         self.max_step_reached = max(4, START_STEP)
-        self.total_wins = 8
-        self.total_losses = 7
+        self.total_wins = 9
+        self.total_losses = 9
         self.last_pair = ""
         self.lock = threading.Lock()
         self.tick_tape = {p["tv"]: deque(maxlen=360) for p in PAIRS}
@@ -122,13 +122,14 @@ def fetch_tv_all():
     out, now_ts = {}, time.time()
     try:
         req = urllib.request.Request(url, data=payload, headers={"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=4.0) as r:
+        with urllib.request.urlopen(req, timeout=3.5) as r:
             for item in json.loads(r.read().decode()).get("data", []):
                 sym, vals = item.get("s"), item.get("d", [])
                 if sym and len(vals) == len(cols):
-                    out[sym] = dict(zip(cols, vals))
-                    if out[sym].get("close") is not None:
-                        p_val = float(out[sym]["close"])
+                    row = dict(zip(cols, vals))
+                    out[sym] = row
+                    if row.get("close") is not None:
+                        p_val = float(row["close"])
                         tape = state.tick_tape.get(sym)
                         if tape is not None and (not tape or tape[-1][1] != p_val):
                             tape.append((now_ts, p_val))
@@ -142,13 +143,12 @@ def fetch_price_volume_ticks(symbol, interval, rng):
         url = f"https://{host}/v8/finance/chart/{symbol}?interval={interval}&range={rng}&_t={ts}"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": f"Mozilla/5.0/{ts%991}", "Cache-Control": "no-cache"})
-            with urllib.request.urlopen(req, timeout=4.0) as r:
+            with urllib.request.urlopen(req, timeout=3.5) as r:
                 res = json.loads(r.read().decode())["chart"]["result"][0]
-                reg = res.get("meta", {}).get("regularMarketPrice")
                 q = res["indicators"]["quote"][0]
                 closes, vols = q.get("close", []), q.get("volume", [])
                 pts = [(float(closes[i]), float(vols[i]) if i < len(vols) and vols[i] else 1.0) for i in range(len(closes)) if closes[i] is not None]
-                return pts, (float(reg) if reg is not None else None)
+                return pts, float(res.get("meta", {}).get("regularMarketPrice") or 0)
         except Exception:
             continue
     return [], 0.0
@@ -157,16 +157,16 @@ def get_live_tick_with_pressure(pair_info):
     tv = fetch_tv_all().get(pair_info["tv"])
     live_p = float(tv["close"]) if tv and tv.get("close") is not None else None
     if live_p is None:
-        pts_1m, reg = fetch_price_volume_ticks(pair_info["yahoo"], "1m", "1d")
-        live_p = reg if reg > 0 else (pts_1m[-1][0] if pts_1m else None)
+        pts, reg = fetch_price_volume_ticks(pair_info["yahoo"], "1m", "1d")
+        live_p = reg if reg > 0 else (pts[-1][0] if pts else None)
     tape = state.tick_tape.get(pair_info["tv"], deque())
     buy_t = sell_t = 0.0
     if len(tape) >= 3:
         pts_list = [x[1] for x in tape]
         for i in range(1, len(pts_list)):
-            d = pts_list[i] - pts_list[i - 1]
-            if d > 0: buy_t += d
-            elif d < 0: sell_t += abs(d)
+            diff = pts_list[i] - pts_list[i - 1]
+            if diff > 0: buy_t += diff
+            elif diff < 0: sell_t += abs(diff)
     tot = buy_t + sell_t
     return live_p, ((buy_t / tot * 100.0) if tot > 0 else None)
 
@@ -224,7 +224,7 @@ def analyze_pair_orderflow(p_info, tv_data):
             d = tp[i] - tp[i-1]
             if d > 0: t_up += d
             elif d < 0: t_dn += abs(d)
-    b_pct = (ob["b_pct"]*0.8 + (t_up/(t_up+t_dn)*100.0)*0.2) if (t_up+t_dn)>0 else ob["b_pct"]
+    b_pct = (ob["b_pct"]*0.75 + (t_up/(t_up+t_dn)*100.0)*0.25) if (t_up+t_dn)>0 else ob["b_pct"]
     s_pct, pos = 100.0 - b_pct, (live_p - ob["min"]) / max(ob["max"] - ob["min"], pip*2.0)
     
     p30s = [x[0] for x in p30m]
@@ -243,18 +243,16 @@ def analyze_pair_orderflow(p_info, tv_data):
     dn_w = sum((1.0/(x[0]+1e-6))*(1.0+x[2]*100.0) for x in top_k if x[1]==0)
     if (up_w + dn_w) <= 0: return None
     h_buy, h_sell = (up_w/(up_w+dn_w))*100.0, (dn_w/(up_w+dn_w))*100.0
+    d_fmt = p_info["digits"]
 
-    if b_pct >= 54.5 and live_p >= ob["vwap"] and pos < 0.84:
-        act, tier, prob, wall = "BUY ORDER (CALL UP) 🟢", (3 if b_pct >= 60 and h_buy >= 56 else 2), (b_pct*0.55 + h_buy*0.45 + 2.5), ob["bw"]
-    elif s_pct >= 54.5 and live_p <= ob["vwap"] and pos > 0.16:
-        act, tier, prob, wall = "SELL ORDER (PUT DOWN) 🔴", (3 if s_pct >= 60 and h_sell >= 56 else 2), (s_pct*0.55 + h_sell*0.45 + 2.5), ob["sw"]
-    elif b_pct >= 53.0 and pos < 0.82 and ob["p5"] >= 50.0:
-        act, tier, prob, wall = "BUY ORDER (CALL UP) 🟢", 1, (b_pct*0.5 + h_buy*0.5), ob["bw"]
-    elif s_pct >= 53.0 and pos > 0.18 and ob["p5"] <= 50.0:
-        act, tier, prob, wall = "SELL ORDER (PUT DOWN) 🔴", 1, (s_pct*0.5 + h_sell*0.5), ob["sw"]
-    else: return None
+    if b_pct >= 55.0 and ob["net"] > 0.3 and live_p >= ob["vwap"] and pos < 0.85:
+        act, tier, prob, wall = "BUY ORDER (CALL UP) 🟢", (3 if b_pct >= 62 and h_buy >= 58 else 2), (b_pct*0.55 + h_buy*0.45 + 3.0), ob["bw"]
+    elif s_pct >= 55.0 and ob["net"] < -0.3 and live_p <= ob["vwap"] and pos > 0.15:
+        act, tier, prob, wall = "SELL ORDER (PUT DOWN) 🔴", (3 if s_pct >= 62 and h_sell >= 58 else 2), (s_pct*0.55 + h_sell*0.45 + 3.0), ob["sw"]
+    else:
+        return None
 
-    return {"pair": p_info, "action": act, "prob": min(96.8, max(56.0, prob)), "tier": tier, "samples": len(matches), "price": live_p, "vwap": ob["vwap"], "b_pct": b_pct, "net": ob["net"], "wall": wall}
+    return {"pair": p_info, "action": act, "prob": min(97.2, max(58.0, prob)), "tier": tier, "samples": len(matches), "price": live_p, "vwap": ob["vwap"], "b_pct": b_pct, "net": ob["net"], "wall": wall}
 
 def format_msg(s, lvl, trd, mx, stake, ent_s, exp_s, live_p, rem_s, live_b=None, closed=False):
     p, d, pip, ent_p = s["pair"], s["pair"]["digits"], s["pair"]["pip"], s["price"]
@@ -334,7 +332,7 @@ def run_cycle():
     with state.lock:
         p_lvl, p_trd, p_mx = get_ladder(state.global_step)
         is_draw = abs(live_p - ent_p) < (pip * 0.1)
-        win = (live_p > ent_p) if "BUY ORDER" in best["action"] else (live_p < ent_p)
+        win = (live_p > ent_p) if "BUY" in best["action"] else (live_p < ent_p)
         if is_draw:
             title, step_str = "⚪ <b>30M ORDER SETTLEMENT: DRAW (0.0 PIPS - REFUND)</b> ⚖️", f"⏸️ <b>Step Unchanged (0):</b> Level {p_lvl} (T{p_trd}/{p_mx}) ➔ "
         elif win:
@@ -371,4 +369,3 @@ if __name__ == "__main__":
         except Exception as e:
             print("Cycle error:", e)
             time.sleep(5)
-
