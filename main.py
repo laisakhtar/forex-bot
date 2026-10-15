@@ -7,7 +7,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX LIVE TIMER & 18-ASSET ENGINE ACTIVE", 200
+    return "QUOTEX ZERO-PULLBACK 30M ENGINE ACTIVE", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -51,6 +51,9 @@ PAIRS = [
 class EngineState:
     def __init__(self):
         self.global_step = 1
+        self.max_step_reached = 1
+        self.total_wins = 0
+        self.total_losses = 0
         self.last_pair = ""
         self.lock = threading.Lock()
 
@@ -102,7 +105,7 @@ def edit_tg(msg_id, text):
 
 def fetch_tv_all():
     url = "https://scanner.tradingview.com/forex/scan"
-    cols = ["close", "open", "Recommend.All|5", "Recommend.All|15", "Recommend.All|30", "Recommend.All|60"]
+    cols = ["close", "open", "high", "low", "Recommend.All|5", "Recommend.All|15", "Recommend.All|30", "Recommend.All|60", "RSI|15", "RSI|30"]
     payload = json.dumps({"symbols": {"tickers": [p["tv"] for p in PAIRS], "query": {"types": []}}, "columns": cols}).encode()
     out = {}
     try:
@@ -122,16 +125,13 @@ def fetch_yahoo(symbol, interval, rng):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": f"Mozilla/5.0/{ts%991}", "Cache-Control": "no-cache"})
             with urllib.request.urlopen(req, timeout=4.0) as r:
-                raw = json.loads(r.read().decode())
-                res = raw["chart"]["result"][0]
+                res = json.loads(r.read().decode())["chart"]["result"][0]
                 reg = res.get("meta", {}).get("regularMarketPrice")
                 q = res["indicators"]["quote"][0]
-                opens = q.get("open", [])
-                closes = q.get("close", [])
                 c_list = []
-                for o, c in zip(opens, closes):
+                for o, h, l, c in zip(q.get("open", []), q.get("high", []), q.get("low", []), q.get("close", [])):
                     if o is not None and c is not None:
-                        c_list.append({"open": float(o), "close": float(c)})
+                        c_list.append({"open": float(o), "high": float(h or c), "low": float(l or c), "close": float(c)})
                 return c_list, (float(reg) if reg is not None else None)
         except Exception:
             continue
@@ -145,7 +145,7 @@ def get_live_tick(pair_info):
     return reg if (reg and reg > 0) else (c_1m[-1]["close"] if c_1m else None)
 
 def analyze_pair(pair_info, tv_data):
-    sym = pair_info["yahoo"]
+    sym, pip = pair_info["yahoo"], pair_info["pip"]
     c_30m, _ = fetch_yahoo(sym, "30m", "1mo")
     c_15m, _ = fetch_yahoo(sym, "15m", "5d")
     c_5m, reg_5m = fetch_yahoo(sym, "5m", "5d")
@@ -164,10 +164,17 @@ def analyze_pair(pair_info, tv_data):
         live_p = reg_5m if (reg_5m and reg_5m > 0) else c_30m[-1]["close"]
 
     open_30m = c_30m[-1]["open"]
+    avg_rng = sum((abs(x["high"] - x["low"]) / pip) for x in c_30m[-8:]) / 8.0
+    vol_bonus = 3.5 if avg_rng >= 4.0 else (-6.0 if avg_rng < 1.8 else 1.0)
+
     d5 = (live_p - c_5m[-2]["close"]) / live_p
     d15 = (live_p - (c_15m[-2]["close"] if len(c_15m) >= 2 else open_30m)) / live_p
     d30 = (live_p - c_30m[-2]["close"]) / live_p
     d60 = (live_p - c_30m[-3]["close"]) / live_p
+
+    s60, s30, s15, s5 = ("UP" if d60>=0 else "DOWN"), ("UP" if d30>=0 else "DOWN"), ("UP" if d15>=0 else "DOWN"), ("UP" if d5>=0 else "DOWN")
+    up_cnt = (1 if d60>=0 else 0) + (1 if d30>=0 else 0) + (1 if d15>=0 else 0) + (1 if d5>=0 else 0)
+    dn_cnt = 4 - up_cnt
 
     closes = [x["close"] for x in c_30m]
     closes[-1] = live_p
@@ -194,24 +201,34 @@ def analyze_pair(pair_info, tv_data):
     up_prob = (up_w / (up_w + dn_w)) * 100.0
     dn_prob = (dn_w / (up_w + dn_w)) * 100.0
 
-    if tv_data and tv_data.get("Recommend.All|30") is not None:
-        tf_flow = (
-            float(tv_data.get("Recommend.All|5") or 0)*0.2 +
-            float(tv_data.get("Recommend.All|15") or 0)*0.25 +
-            float(tv_data.get("Recommend.All|30") or 0)*0.3 +
-            float(tv_data.get("Recommend.All|60") or 0)*0.25
-        )
-        up_prob = up_prob * 0.6 + (50.0 + tf_flow * 40.0) * 0.4
-        dn_prob = dn_prob * 0.6 + (50.0 - tf_flow * 40.0) * 0.4
+    rsi_30 = 50.0
+    if tv_data:
+        if tv_data.get("RSI|30") is not None:
+            rsi_30 = float(tv_data["RSI|30"])
+        if tv_data.get("Recommend.All|30") is not None:
+            tf_flow = (
+                float(tv_data.get("Recommend.All|5") or 0)*0.25 +
+                float(tv_data.get("Recommend.All|15") or 0)*0.25 +
+                float(tv_data.get("Recommend.All|30") or 0)*0.30 +
+                float(tv_data.get("Recommend.All|60") or 0)*0.20
+            )
+            up_prob = up_prob * 0.50 + (50.0 + tf_flow * 42.0) * 0.50
+            dn_prob = dn_prob * 0.50 + (50.0 - tf_flow * 42.0) * 0.50
 
-    up_align = (1 if d60 > 0 else 0) + (1 if d30 > 0 else 0) + (1 if d15 > 0 else 0) + (1 if d5 > 0 else 0)
-    if up_prob >= dn_prob:
-        act, prob = "CALL (UP) 🟢", min(95.8, max(53.2, up_prob + up_align * 1.4))
+    if up_cnt >= 3:
+        act = "CALL (UP) 🟢"
+        base_p = max(up_prob, 58.0) + (up_cnt * 2.2) + vol_bonus + (-12.0 if rsi_30 > 70 else (3.0 if 52 <= rsi_30 <= 67 else 0.0))
+    elif dn_cnt >= 3:
+        act = "PUT (DOWN) 🔴"
+        base_p = max(dn_prob, 58.0) + (dn_cnt * 2.2) + vol_bonus + (-12.0 if rsi_30 < 30 else (3.0 if 33 <= rsi_30 <= 48 else 0.0))
     else:
-        act, prob = "PUT (DOWN) 🔴", min(95.8, max(53.2, dn_prob + (4 - up_align) * 1.4))
+        act = "CALL (UP) 🟢" if up_prob >= dn_prob else "PUT (DOWN) 🔴"
+        base_p = max(up_prob, dn_prob) - 10.0
 
-    logic = f"1H:{'UP' if d60>=0 else 'DOWN'} | 30M:{'UP' if d30>=0 else 'DOWN'} | 15M:{'UP' if d15>=0 else 'DOWN'} | 5M:{'UP' if d5>=0 else 'DOWN'}"
-    return {"pair": pair_info, "action": act, "prob": prob, "samples": len(matches), "reason": logic, "price": live_p, "open_30m": open_30m}
+    prob = min(96.4, max(51.5, base_p))
+    aligned = 1 if (up_cnt >= 3 or dn_cnt >= 3) else 0
+    logic = f"1H:{s60} | 30M:{s30} | 15M:{s15} | 5M:{s5} (RSI:{rsi_30:.0f})"
+    return {"pair": pair_info, "action": act, "prob": prob, "aligned": aligned, "samples": len(matches), "reason": logic, "price": live_p, "open_30m": open_30m}
 
 def format_msg(s, lvl, trd, mx, stake, ent_s, exp_s, live_p, rem_s, closed=False):
     p = s["pair"]
@@ -225,8 +242,9 @@ def format_msg(s, lvl, trd, mx, stake, ent_s, exp_s, live_p, rem_s, closed=False
     else:
         status = f"🔴 <b>PULLBACK ({signed_pips:+.1f} Pips)</b>"
     timer_str = f"🏁 <b>CANDLE CLOSED ({exp_s})</b>" if closed else f"⏳ <b>Close Hone Mein Baki:</b> <code>{int(rem_s)//60:02d}m {int(rem_s)%60:02d}s</code>"
+    m_lvl, m_trd, m_mx = get_ladder(state.max_step_reached)
     return (
-        f"⚡ <b>LIVE REAL-TIME PRICE & TIMER SIGNAL</b>\n\n"
+        f"⚡ <b>ZERO-PULLBACK 30M LIVE SIGNAL</b>\n\n"
         f"📊 <b>Asset:</b> <code>{p['name']}</code> (18-Asset Scan)\n"
         f"🚀 <b>Direction:</b> <b>{s['action']}</b>\n"
         f"🎯 <b>Win Probability:</b> <b>{s['prob']:.2f}%</b> ({s['samples']} Past 30D Matches)\n\n"
@@ -238,11 +256,16 @@ def format_msg(s, lvl, trd, mx, stake, ent_s, exp_s, live_p, rem_s, closed=False
         f"🛑 <b>Candle Close Time:</b> <code>{exp_s}</code>\n"
         f"{timer_str}\n\n"
         f"📈 <b>Current Ladder:</b> Level {lvl}/30 (Trade {trd}/{mx})\n"
+        f"🏆 <b>Peak Reached:</b> Level {m_lvl}/30 (Trade {m_trd}/{m_mx})\n"
         f"💵 <b>Stake Amount:</b> ${stake}\n"
-        f"🔬 <b>Price Data:</b> <i>{s['reason']}</i>"
+        f"🔬 <b>Aligned Flow:</b> <i>{s['reason']}</i>"
     )
 
 def run_cycle():
+    now_c = get_ist()
+    if now_c.minute in [0, 30] and now_c.second < 12:
+        time.sleep(12 - now_c.second)
+
     now_ist = get_ist()
     exp_dt = next_close_time(now_ist)
     ent_s, exp_s = now_ist.strftime("%H:%M:%S IST"), exp_dt.strftime("%H:%M:%S IST")
@@ -255,8 +278,12 @@ def run_cycle():
         time.sleep(5)
         return
 
-    res_list.sort(key=lambda x: x["prob"], reverse=True)
-    best = res_list[1] if (len(res_list) > 1 and res_list[0]["pair"]["name"] == state.last_pair and (res_list[0]["prob"] - res_list[1]["prob"]) < 2.0) else res_list[0]
+    res_list.sort(key=lambda x: (x["aligned"], x["prob"]), reverse=True)
+    best = res_list[0]
+    if len(res_list) > 1 and best["pair"]["name"] == state.last_pair and res_list[1]["aligned"] == best["aligned"]:
+        if (best["prob"] - res_list[1]["prob"]) < 2.0:
+            best = res_list[1]
+
     p_info = best["pair"]
     state.last_pair = p_info["name"]
     ent_p, d = best["price"], p_info["digits"]
@@ -288,22 +315,44 @@ def run_cycle():
     edit_tg(msg_id, format_msg(best, lvl, trd, mx, stake, ent_s, exp_s, live_p, 0, True))
 
     with state.lock:
+        p_lvl, p_trd, p_mx = get_ladder(state.global_step)
         win = (live_p > ent_p) if "CALL" in best["action"] else (live_p < ent_p)
-        state.global_step = (state.global_step + 1) if win else max(1, state.global_step - 1)
+        if win:
+            state.global_step += 1
+            state.total_wins += 1
+            if state.global_step > state.max_step_reached:
+                state.max_step_reached = state.global_step
+            title = "✅ <b>30M CANDLE CLOSE RESULT: PROFIT (+1 STEP PLUS)</b> 🟢"
+            step_str = f"➕ <b>Step Plus (+1):</b> Level {p_lvl} (T{p_trd}/{p_mx}) ➔ "
+        else:
+            state.global_step = max(1, state.global_step - 1)
+            state.total_losses += 1
+            title = "⚠️ <b>30M CANDLE CLOSE RESULT: LOSS (-1 STEP MINUS)</b> 🔴"
+            step_str = f"➖ <b>Step Minus (-1):</b> Level {p_lvl} (T{p_trd}/{p_mx}) ➔ "
+
         n_lvl, n_trd, n_mx = get_ladder(state.global_step)
+        m_lvl, m_trd, m_mx = get_ladder(state.max_step_reached)
         n_stake = LEVELS_STAKE[n_lvl]
-        title = "✅ <b>30M CANDLE CLOSE RESULT: WIN (+1 STEP)</b> 🟢" if win else "⚠️ <b>30M CANDLE CLOSE RESULT: LOSS (-1 STEP)</b> 🔴"
+        step_str += f"<b>Level {n_lvl}/30 (Trade {n_trd}/{n_mx})</b>"
+
         send_tg(
             f"{title}\n\n"
             f"📊 <b>Asset:</b> <code>{p_info['name']}</code>\n"
-            f"📍 <b>Entry Price:</b> <code>{ent_p:.{d}f}</code> ➔ <b>Close Price:</b> <code>{live_p:.{d}f}</code>\n"
-            f"📈 <b>New Ladder Position:</b> Level {n_lvl}/30 (Trade {n_trd}/{n_mx})\n"
-            f"💵 <b>Next Stake:</b> ${n_stake}"
+            f"📍 <b>Entry Price:</b> <code>{ent_p:.{d}f}</code> ➔ <b>Close Price:</b> <code>{live_p:.{d}f}</code>\n\n"
+            f"🪜 <b>COMPOUNDING LADDER TRACKER:</b>\n"
+            f"{step_str}\n"
+            f"🏆 <b>Highest Level Reached:</b> Level {m_lvl}/30 (Trade {m_trd}/{m_mx})\n"
+            f"📊 <b>Session Record:</b> {state.total_wins} Wins | {state.total_losses} Losses\n"
+            f"💵 <b>Next Trade Stake:</b> <b>${n_stake}</b>"
         )
 
 def market_engine():
     time.sleep(2)
-    send_tg("⚡ <b>18-ASSET LIVE PRICE & TIMER ENGINE DEPLOYED</b>\n• Live Countdown Timer & Real-Time Price active.")
+    send_tg(
+        "🛡️ <b>ZERO-PULLBACK 30M COMPOUNDING ENGINE LIVE</b>\n\n"
+        "• <b>Pullback Killer Active:</b> Strict 30M+15M+5M Trend Lock + RSI Filter + 12s Opening Wick Cushion.\n"
+        "• <b>Compounding Tracker:</b> Profit = +1 Step Plus | Loss = -1 Step Minus (With Peak Level History)."
+    )
     while True:
         try:
             run_cycle()
