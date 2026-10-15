@@ -8,29 +8,27 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health():
-    return "QUOTEX LIVE ORDER-FLOW ENGINE ACTIVE", 200
+    return "QUOTEX LIVE TICK ORDER-FLOW & BUYER/SELLER ENGINE ACTIVE", 200
 
 def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, use_reloader=False, threaded=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), use_reloader=False, threaded=True)
 
-def _bootstrap_engine():
-    time.sleep(2.0)
-    while True:
-        try:
-            if "market_engine" in globals():
-                market_engine()
-        except Exception as e:
-            print("Bootstrap error:", e)
-        time.sleep(5)
-
-# NON-DAEMON THREADS AT TOP: Render can NEVER exit early!
+# THREADING FIX: 'daemon=False' makes sure Render NEVER exits early!
 threading.Thread(target=run_flask, daemon=False).start()
-threading.Thread(target=_bootstrap_engine, daemon=False).start()
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8807036352:AAGwVcFaIxvVU7xUIWFDHlHUwKM3vGdLbuw").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "5883050661").strip()
 START_STEP = int(os.environ.get("START_STEP", "3"))
+
+def clear_bot_webhook():
+    if not BOT_TOKEN:
+        return
+    try:
+        urllib.request.urlopen(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=True", timeout=5)
+    except Exception:
+        pass
+
+clear_bot_webhook()
 
 LEVELS_STAKE = {
     1: 1.61, 2: 2.93, 3: 5.33, 4: 9.71, 5: 17.67,
@@ -74,14 +72,6 @@ class EngineState:
 
 state = EngineState()
 
-def clear_bot_webhook():
-    if not BOT_TOKEN:
-        return
-    try:
-        urllib.request.urlopen(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=True", timeout=4)
-    except Exception:
-        pass
-
 def get_ladder(g_step):
     if g_step <= 80:
         return ((g_step - 1) // 4) + 1, ((g_step - 1) % 4) + 1, 4
@@ -94,7 +84,10 @@ def get_ist():
     return datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
 def next_close_time(now_ist):
-    t = now_ist.replace(minute=30, second=0, microsecond=0) if now_ist.minute < 30 else (now_ist + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    if now_ist.minute < 30:
+        t = now_ist.replace(minute=30, second=0, microsecond=0)
+    else:
+        t = (now_ist + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
     return t + timedelta(minutes=30) if (t - now_ist).total_seconds() < 20 else t
 
 def send_tg(text):
@@ -291,31 +284,53 @@ def format_orderflow_msg(s, lvl, trd, mx, stake, ent_s, exp_s, live_p, rem_s, li
     d, pip, ent_p = p["digits"], p["pip"], s["price"]
     pips = (live_p - ent_p) / pip
     signed_pips = pips if "BUY ORDER" in s["action"] else -pips
-    status = "⚪ <b>AT ENTRY COORDINATE (0.0 Pips - Draw Safe)</b>" if abs(live_p - ent_p) < pip * 0.1 else (f"🟢 <b>ORDER IN PROFIT ({signed_pips:+.1f} Pips)</b>" if signed_pips > 0 else f"🔴 <b>ORDER PULLBACK ({signed_pips:+.1f} Pips)</b>")
+    if abs(live_p - ent_p) < pip * 0.1:
+        status = "⚪ <b>AT ENTRY COORDINATE (0.0 Pips - Draw Safe)</b>"
+    elif signed_pips > 0:
+        status = f"🟢 <b>ORDER IN PROFIT ({signed_pips:+.1f} Pips)</b>"
+    else:
+        status = f"🔴 <b>ORDER PULLBACK ({signed_pips:+.1f} Pips)</b>"
+
     b_pct = live_b_pct if live_b_pct is not None else s["buyer_pct"]
+    s_pct = 100.0 - b_pct
     timer_str = f"🏁 <b>30M ORDER CYCLE SETTLED ({exp_s})</b>" if closed else f"⏳ <b>Settlement Mein Baki:</b> <code>{int(rem_s)//60:02d}m {int(rem_s)%60:02d}s</code>"
     m_lvl, m_trd, m_mx = get_ladder(state.max_step_reached)
-    return (
-        f"⚡ <b>LIVE BUYER/SELLER ORDER-FLOW ENGINE</b>\n\n"
-        f"📊 <b>Asset:</b> <code>{p['name']}</code> (18-Asset Tick Scan)\n"
-        f"🚀 <b>Order Execution:</b> <b>{s['action']}</b>\n"
-        f"🎯 <b>Order Win Probability:</b> <b>{s['prob']:.2f}%</b> ({s['samples']} 30D Price Matches)\n\n"
-        f"🏦 <b>LIVE ORDER BOOK PRESSURE (NO CANDLES):</b>\n"
-        f"🟢 <b>Active Buyers:</b> <code>{b_pct:.1f}%</code> | 🔴 <b>Active Sellers:</b> <code>{100.0-b_pct:.1f}%</code>\n"
-        f"💥 <b>Net Order Delta:</b> <code>{s['net_delta']:+.1f} Pips</code>\n"
-        f"⚖️ <b>Institutional VWAP Price:</b> <code>{s['vwap']:.{d}f}</code>\n"
-        f"🛡️ <b>Liquidity Zone:</b> <code>{s['wall_info']}</code>\n\n"
-        f"🎯 <b>Locked Entry Price:</b> <code>{ent_p:.{d}f}</code> ({ent_s})\n"
-        f"💹 <b>Live Tick Price:</b> <code>{live_p:.{d}f}</code>\n"
-        f"📊 <b>Live Order Status:</b> {status}\n\n"
-        f"⏱️ <b>LIVE SETTLEMENT TIMER:</b>\n"
-        f"🛑 <b>Settlement Time:</b> <code>{exp_s}</code>\n"
-        f"{timer_str}\n\n"
-        f"📈 <b>Current Ladder:</b> Level {lvl}/30 (Trade {trd}/{mx})\n"
-        f"🏆 <b>Peak Reached:</b> Level {m_lvl}/30 (Trade {m_trd}/{m_mx})\n"
-        f"💵 <b>Stake Amount:</b> ${stake}\n"
+    
+    lines = [
+        "⚡ <b>LIVE BUYER/SELLER ORDER-FLOW ENGINE</b>\n",
+        f"📊 <b>Asset:</b> <code>{p['name']}</code> (18-Asset Tick Scan)",
+        f"🚀 <b>Order Execution:</b> <b>{s['action']}</b>",
+        f"🎯 <b>Order Win Probability:</b> <b>{s['prob']:.2f}%</b> ({s['samples']} 30D Price Matches)\n",
+        "🏦 <b>LIVE ORDER BOOK PRESSURE (NO CANDLES):</b>",
+        f"🟢 <b>Active Buyers:</b> <code>{b_pct:.1f}%</code> | 🔴 <b>Active Sellers:</b> <code>{s_pct:.1f}%</code>",
+        f"💥 <b>Net Order Delta:</b> <code>{s['net_delta']:+.1f} Pips</code>",
+        f"⚖️ <b>Institutional VWAP Price:</b> <code>{s['vwap']:.{d}f}</code>",
+        f"🛡️ <b>Liquidity Zone:</b> <code>{s['wall_info']}</code>\n",
+        f"🎯 <b>Locked Entry Price:</b> <code>{ent_p:.{d}f}</code> ({ent_s})",
+        f"💹 <b>Live Tick Price:</b> <code>{live_p:.{d}f}</code>",
+        f"📊 <b>Live Order Status:</b> {status}\n",
+        "⏱️ <b>LIVE SETTLEMENT TIMER:</b>",
+        f"🛑 <b>Settlement Time:</b> <code>{exp_s}</code>",
+        f"{timer_str}\n",
+        f"📈 <b>Current Ladder:</b> Level {lvl}/30 (Trade {trd}/{mx})",
+        f"🏆 <b>Peak Reached:</b> Level {m_lvl}/30 (Trade {m_trd}/{m_mx})",
+        f"💵 <b>Stake Amount:</b> ${stake}",
         f"🔬 <b>Order Tape:</b> <i>{s['flow_str']}</i>"
-    )
+    ]
+    return "\n".join(lines)
+
+def wait_for_tick_absorption_entry(pair_info, action, initial_price):
+    pip, best_p = pair_info["pip"], initial_price
+    for _ in range(4):
+        if get_ist().second > 35:
+            break
+        tick, _ = get_live_tick_with_pressure(pair_info)
+        if tick:
+            best_p = tick
+            if ("BUY ORDER" in action and tick <= initial_price - pip*0.4) or ("SELL ORDER" in action and tick >= initial_price + pip*0.4):
+                return tick
+        time.sleep(3)
+    return best_p
 
 def run_cycle():
     clear_bot_webhook()
@@ -332,6 +347,8 @@ def run_cycle():
     best = res_list[1] if (len(res_list) > 1 and res_list[0]["pair"]["name"] == state.last_pair and res_list[1]["tier"] == res_list[0]["tier"] and (res_list[0]["prob"] - res_list[1]["prob"]) < 2.0) else res_list[0]
     p_info = best["pair"]
     state.last_pair = p_info["name"]
+    if get_ist().minute in [0, 30] and get_ist().second < 28:
+        best["price"] = wait_for_tick_absorption_entry(p_info, best["action"], best["price"])
     now_ist = get_ist()
     exp_dt = next_close_time(now_ist)
     ent_s, exp_s = now_ist.strftime("%H:%M:%S IST"), exp_dt.strftime("%H:%M:%S IST")
@@ -368,11 +385,4 @@ def run_cycle():
             title, step_str = "✅ <b>30M ORDER SETTLEMENT: PROFIT (+1 STEP PLUS)</b> 🟢", f"➕ <b>Step Plus (+1):</b> Level {p_lvl} (T{p_trd}/{p_mx}) ➔ "
         else:
             state.global_step = max(1, state.global_step - 1)
-            state.total_losses += 1
-            title, step_str = "⚠️ <b>30M ORDER SETTLEMENT: LOSS (-1 STEP MINUS)</b> 🔴", f"➖ <b>Step Minus (-1):</b> Level {p_lvl} (T{p_trd}/{p_mx}) ➔ "
-        n_lvl, n_trd, n_mx = get_ladder(state.global_step)
-        m_lvl, m_trd, m_mx = get_ladder(state.max_step_reached)
-        n_stake = LEVELS_STAKE[n_lvl]
-        send_tg(
-            f"{title}\n\n📊 <b>Asset:</b> <code>{p_info['name']}</code>\n"
-            f"📍 <b>Entry Price:</b> <code>{ent_p:.{d}f}</
+       
