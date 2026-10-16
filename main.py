@@ -426,7 +426,7 @@ def run_cycle():
     ent_s, exp_s = now_ist.strftime("%H:%M:%S IST"), exp_dt.strftime("%H:%M:%S IST")
     ent_p, d, pip = best["price"], p_info["digits"], p_info["pip"]
 
-    with state.lock:
+ with state.lock:
         lvl, trd, mx = get_ladder(state.global_step)
         stake = LEVELS_STAKE[lvl]
 
@@ -434,4 +434,72 @@ def run_cycle():
     msg_id = send_tg(format_orderflow_msg(best, lvl, trd, mx, stake, ent_s, exp_s, ent_p, rem_s, best["buyer_pct"], best["seller_pct"], best["net_delta"], False))
 
     live_p, live_b, live_s, live_d = ent_p, best["buyer_pct"], best["seller_pct"], best["net_delta"]
-    while
+    while True:
+        rem_s = (exp_dt - get_ist()).total_seconds()
+        if rem_s <= 0:
+            break
+        time.sleep(min(5.0, max(0.5, rem_s)))
+        rem_s = (exp_dt - get_ist()).total_seconds()
+        if rem_s <= 0:
+            break
+        tick_p, dyn_b, dyn_s, dyn_d = get_live_tick_and_dynamic_book(p_info, best)
+        if tick_p:
+            live_p = tick_p
+        live_b, live_s, live_d = dyn_b, dyn_s, dyn_d
+        edit_tg(msg_id, format_orderflow_msg(best, lvl, trd, mx, stake, ent_s, exp_s, live_p, rem_s, live_b, live_s, live_d, False))
+
+    final_tick, final_b, final_s, final_d = get_live_tick_and_dynamic_book(p_info, best)
+    if final_tick:
+        live_p = final_tick
+    edit_tg(msg_id, format_orderflow_msg(best, lvl, trd, mx, stake, ent_s, exp_s, live_p, 0, final_b, final_s, final_d, True))
+
+    with state.lock:
+        p_lvl, p_trd, p_mx = get_ladder(state.global_step)
+        is_draw = abs(live_p - ent_p) < (pip * 0.1)
+        win = (live_p > ent_p) if "BUY ORDER" in best["action"] else (live_p < ent_p)
+
+        if is_draw:
+            title = "⚪ <b>30M ORDER SETTLEMENT: DRAW (0.0 PIPS - REFUND)</b> ⚖️"
+            step_str = f"⏸️ <b>Step Unchanged (0):</b> Level {p_lvl} (T{p_trd}/{p_mx}) ➔ "
+        elif win:
+            state.global_step += 1
+            state.total_wins += 1
+            if state.global_step > state.max_step_reached:
+                state.max_step_reached = state.global_step
+            title = "✅ <b>30M ORDER SETTLEMENT: PROFIT (+1 STEP PLUS)</b> 🟢"
+            step_str = f"➕ <b>Step Plus (+1):</b> Level {p_lvl} (T{p_trd}/{p_mx}) ➔ "
+        else:
+            state.global_step = max(1, state.global_step - 1)
+            state.total_losses += 1
+            title = "⚠️ <b>30M ORDER SETTLEMENT: LOSS (-1 STEP MINUS)</b> 🔴"
+            step_str = f"➖ <b>Step Minus (-1):</b> Level {p_lvl} (T{p_trd}/{p_mx}) ➔ "
+
+        n_lvl, n_trd, n_mx = get_ladder(state.global_step)
+        m_lvl, m_trd, m_mx = get_ladder(state.max_step_reached)
+        n_stake = LEVELS_STAKE[n_lvl]
+        lines = [
+            f"{title}\n",
+            f"📊 <b>Asset:</b> <code>{p_info['name']}</code>",
+            f"📍 <b>Entry Price:</b> <code>{ent_p:.{d}f}</code> ➔ <b>Settlement Price:</b> <code>{live_p:.{d}f}</code>\n",
+            "🪜 <b>COMPOUNDING LADDER TRACKER:</b>",
+            f"{step_str}<b>Level {n_lvl}/30 (Trade {n_trd}/{n_mx})</b>",
+            f"🏆 <b>Highest Level Reached:</b> Level {m_lvl}/30 (Trade {m_trd}/{m_mx})",
+            f"📊 <b>Session Record:</b> {state.total_wins} Wins | {state.total_losses} Losses",
+            f"💵 <b>Next Trade Stake:</b> <b>${n_stake}</b>"
+        ]
+        send_tg("\n".join(lines))
+
+if __name__ == "__main__":
+    clear_bot_webhook()
+    time.sleep(1)
+    send_tg(
+        "🏦 <b>FULL INSTITUTIONAL ORDER-FLOW ENGINE LIVE</b>\n\n"
+        "• <b>All Features Restored:</b> Active Buyers/Sellers %, Net Order Delta, Institutional VWAP, Liquidity Zone & Order Tape.\n"
+        "• <b>Instant Signal & 5s Live Refresh:</b> Immediate signal on deploy + real-time volume/price tick updates."
+    )
+    while True:
+        try:
+            run_cycle()
+        except Exception as e:
+            print("Cycle error:", e)
+            time.sleep(3)
