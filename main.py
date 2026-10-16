@@ -452,8 +452,7 @@ def run_cycle():
     if final_tick:
         live_p = final_tick
     edit_tg(msg_id, format_orderflow_msg(best, lvl, trd, mx, stake, ent_s, exp_s, live_p, 0, final_b, final_s, final_d, True))
-
-    with state.lock:
+   with state.lock:
         p_lvl, p_trd, p_mx = get_ladder(state.global_step)
         is_draw = abs(live_p - ent_p) < (pip * 0.1)
         win = (live_p > ent_p) if "BUY ORDER" in best["action"] else (live_p < ent_p)
